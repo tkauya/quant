@@ -112,7 +112,13 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
 
     @router.get("/quant/snapshot")
     def quant_snapshot():
-        return scanner.get_quant_snapshot()
+        snapshot = scanner.get_quant_snapshot()
+        snapshot["scan_status"] = scheduler.scan_status()
+        return snapshot
+
+    @router.get("/scan-status")
+    def scan_status():
+        return scheduler.scan_status()
 
     @router.get("/live/readiness")
     def live_readiness():
@@ -174,8 +180,7 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
     @router.post("/start")
     def start():
         scheduler.start()
-        scan_result = scanner.scan()
-        return {"ok": True, "scan": scan_result}
+        return {"ok": True, "scan": scheduler.run_now_async()}
 
     @router.post("/stop")
     def stop():
@@ -184,7 +189,7 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
 
     @router.post("/scan")
     def scan():
-        return scanner.scan()
+        return {"ok": True, "scan": scheduler.run_now_async()}
 
     @router.post("/settings")
     def update_settings(update: SettingsUpdate):
