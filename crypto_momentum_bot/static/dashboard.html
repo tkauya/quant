@@ -526,8 +526,14 @@
       setNotice(message);
       try {
         await fn();
+      } catch (err) {
+        setNotice(err.message);
+        throw err;
       } finally {
-        setNotice("");
+        setTimeout(() => {
+          const current = document.getElementById("notice").textContent;
+          if (current === message) setNotice("");
+        }, 1200);
       }
     }
     async function refresh() {
@@ -560,14 +566,20 @@
     async function testBinanceAccount() {
       const confirmation = prompt("This sends your configured Binance API credentials to Binance for an account-readiness check. Type exactly: TEST BINANCE ACCOUNT");
       if (confirmation !== "TEST BINANCE ACCOUNT") return;
-      const result = await api("/api/live/readiness", {method:"POST", body:JSON.stringify({include_account_check:true, confirmation})});
-      renderLiveReadiness(result);
+      await withBusy("Testing Binance account access...", async () => {
+        const result = await api("/api/live/readiness", {method:"POST", body:JSON.stringify({include_account_check:true, confirmation})});
+        renderLiveReadiness(result);
+        setNotice(result.account_check && result.account_check.detail ? result.account_check.detail : "Account test completed.");
+      });
     }
     async function testSpotTradePermission() {
       const confirmation = prompt("This sends a Binance /api/v3/order/test market BUY payload using your configured API credentials. Binance validates trade permission but does not place an order. Type exactly: TEST SPOT TRADE PERMISSION");
       if (confirmation !== "TEST SPOT TRADE PERMISSION") return;
-      const result = await api("/api/live/trade-permission-test", {method:"POST", body:JSON.stringify({symbol:"DOGE/USDT", quote_amount:6, confirmation})});
-      document.getElementById("tradePermissionCheck").textContent = result.detail || "No result";
+      await withBusy("Testing Binance spot trade permission...", async () => {
+        const result = await api("/api/live/trade-permission-test", {method:"POST", body:JSON.stringify({symbol:"DOGE/USDT", quote_amount:6, confirmation})});
+        document.getElementById("tradePermissionCheck").textContent = result.detail || "No result";
+        setNotice(result.detail || "Spot trade permission test completed.");
+      });
     }
     async function applyModeSelection() {
       const modeValue = mode.value;

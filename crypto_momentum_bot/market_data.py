@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -77,6 +78,14 @@ class BinanceMarketData:
                 "options": {"defaultType": "spot"},
             }
         )
+        self._markets_lock = threading.Lock()
+
+    def ensure_markets_loaded(self) -> None:
+        if self.exchange.markets:
+            return
+        with self._markets_lock:
+            if not self.exchange.markets:
+                self.exchange.load_markets()
 
     def credential_status(self) -> dict[str, Any]:
         api_key = self.settings.binance_api_key or ""
@@ -160,6 +169,7 @@ class BinanceMarketData:
         if not credential_status["credentials_complete"]:
             return {"requested": True, "ok": False, "detail": "Missing API key or secret"}
 
+        self.ensure_markets_loaded()
         market = self.exchange.market(symbol)
         if not self._is_tradeable_usdt_spot(symbol, market):
             return {"requested": True, "ok": False, "detail": f"{symbol} is not an allowed active spot USDT market"}

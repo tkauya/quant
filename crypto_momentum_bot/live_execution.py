@@ -53,6 +53,7 @@ class BinanceFilterHelper:
         self.market_data = market_data
 
     def validate_intent(self, intent: OrderIntent) -> ExchangeFilterResult:
+        self.market_data.ensure_markets_loaded()
         market = self.market_data.exchange.market(intent.symbol)
         filters = {
             item.get("filterType"): item

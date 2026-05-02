@@ -57,9 +57,17 @@ class BotScheduler:
             self.scheduler.shutdown(wait=False)
 
     def run_now_async(self) -> dict[str, Any]:
-        if self._scan_status["is_scanning"]:
+        if not self._scan_lock.acquire(blocking=False):
             return {"queued": False, "reason": "scan already running", "scan_status": self.scan_status()}
-        thread = threading.Thread(target=self._run_scan_sync, name="market-scan", daemon=True)
+        started = datetime.now(timezone.utc).isoformat()
+        self._scan_status.update(
+            {
+                "is_scanning": True,
+                "last_started_at": started,
+                "last_error": None,
+            }
+        )
+        thread = threading.Thread(target=self._run_scan_with_lock, name="market-scan", daemon=True)
         thread.start()
         return {"queued": True, "scan_status": self.scan_status()}
 
@@ -77,6 +85,9 @@ class BotScheduler:
                 "last_error": None,
             }
         )
+        self._run_scan_with_lock()
+
+    def _run_scan_with_lock(self) -> None:
         try:
             result = self.scan_callable()
             self._scan_status["last_result"] = result
