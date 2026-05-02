@@ -76,6 +76,7 @@ class BinanceMarketData:
                 "options": {"defaultType": "spot"},
             }
         )
+        self.exchange.has["fetchCurrencies"] = False
         self._private_exchange = ccxt.binance(
             {
                 "apiKey": settings.binance_api_key or None,
@@ -84,6 +85,7 @@ class BinanceMarketData:
                 "options": {"defaultType": "spot"},
             }
         )
+        self._private_exchange.has["fetchCurrencies"] = False
         self._markets_lock = threading.Lock()
 
     def ensure_markets_loaded(self) -> None:
