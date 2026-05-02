@@ -25,6 +25,10 @@ class AppSettings(BaseSettings):
 @lru_cache
 def get_settings() -> AppSettings:
     settings = AppSettings()
-    settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        settings.database_path.parent.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        settings.database_path = Path("data/bot.sqlite3")
+        settings.database_path.parent.mkdir(parents=True, exist_ok=True)
     Path("logs").mkdir(exist_ok=True)
     return settings
