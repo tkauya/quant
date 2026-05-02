@@ -72,6 +72,12 @@ class BinanceMarketData:
         }
         self.exchange = ccxt.binance(
             {
+                "enableRateLimit": True,
+                "options": {"defaultType": "spot"},
+            }
+        )
+        self._private_exchange = ccxt.binance(
+            {
                 "apiKey": settings.binance_api_key or None,
                 "secret": settings.binance_api_secret or None,
                 "enableRateLimit": True,
@@ -86,6 +92,12 @@ class BinanceMarketData:
         with self._markets_lock:
             if not self.exchange.markets:
                 self.exchange.load_markets()
+
+    def private_exchange(self) -> ccxt.binance:
+        self.ensure_markets_loaded()
+        if not self._private_exchange.markets:
+            self._private_exchange.set_markets(self.exchange.markets)
+        return self._private_exchange
 
     def credential_status(self) -> dict[str, Any]:
         api_key = self.settings.binance_api_key or ""
@@ -133,7 +145,7 @@ class BinanceMarketData:
                 account_check = {"requested": True, "ok": False, "detail": "Missing API key or secret"}
             else:
                 try:
-                    balance = self.exchange.fetch_balance()
+                    balance = self.private_exchange().fetch_balance()
                     non_zero_assets = sum(
                         1
                         for value in (balance.get("total") or {}).values()
@@ -174,6 +186,7 @@ class BinanceMarketData:
         if not self._is_tradeable_usdt_spot(symbol, market):
             return {"requested": True, "ok": False, "detail": f"{symbol} is not an allowed active spot USDT market"}
 
+        private = self.private_exchange()
         params = {
             "symbol": market["id"],
             "side": "BUY",
@@ -181,7 +194,7 @@ class BinanceMarketData:
             "quoteOrderQty": self.exchange.amount_to_precision(symbol, quote_amount),
         }
         try:
-            self.exchange.privatePostOrderTest(params)
+            private.privatePostOrderTest(params)
             return {
                 "requested": True,
                 "ok": True,

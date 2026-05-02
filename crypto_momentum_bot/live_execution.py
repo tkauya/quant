@@ -347,7 +347,7 @@ class GatedLiveExecutor:
         )
 
         try:
-            order = self.market_data.exchange.create_order(
+            order = self.market_data.private_exchange().create_order(
                 symbol=symbol,
                 type="market",
                 side="buy",
