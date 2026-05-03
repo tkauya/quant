@@ -45,6 +45,8 @@ class BacktestEngine:
         account_size: float = 1000,
         risk_percent: float = 1,
         fee_bps: float = 10,
+        timeframe: str = "4h",
+        symbols: list[str] | None = None,
     ):
         self.market_data = market_data
         self.universe_size = universe_size
@@ -53,17 +55,22 @@ class BacktestEngine:
         self.account_size = account_size
         self.risk_percent = risk_percent
         self.fee_bps = fee_bps
+        self.timeframe = timeframe
+        self.symbols = symbols
 
     def run(self) -> dict[str, Any]:
-        universe = self.market_data.load_top_usdt_pairs(self.universe_size)
-        btc = enrich(self.market_data.fetch_ohlcv("BTC/USDT", "4h", limit=self.bars + 100))
-        eth = enrich(self.market_data.fetch_ohlcv("ETH/USDT", "4h", limit=self.bars + 100))
+        universe = self._universe()
+        btc = enrich(self.market_data.fetch_ohlcv("BTC/USDT", self.timeframe, limit=self.bars + 100))
+        eth = enrich(self.market_data.fetch_ohlcv("ETH/USDT", self.timeframe, limit=self.bars + 100))
         trades: list[BacktestTrade] = []
         errors: list[str] = []
+        universe_errors = [ticker.symbol for ticker in universe if ticker.quote_volume < 0]
+        errors.extend([f"{symbol}: not an active Binance spot USDT market" for symbol in universe_errors])
+        universe = [ticker for ticker in universe if ticker.quote_volume >= 0]
 
         for rank, ticker in enumerate(universe, start=1):
             try:
-                df = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "4h", limit=self.bars + 100))
+                df = enrich(self.market_data.fetch_ohlcv(ticker.symbol, self.timeframe, limit=self.bars + 100))
                 trades.extend(self._run_symbol(ticker, rank, df, btc, eth))
             except Exception as exc:
                 errors.append(f"{ticker.symbol}: {exc}")
@@ -75,7 +82,7 @@ class BacktestEngine:
             "assumptions": {
                 "universe": "Current top Binance spot USDT pairs by quote volume, not historical constituents",
                 "universe_size": self.universe_size,
-                "timeframe": "4h",
+                "timeframe": self.timeframe,
                 "bars_requested": self.bars,
                 "min_score": self.min_score,
                 "entry": "Next 4H candle open after signal",
@@ -87,6 +94,28 @@ class BacktestEngine:
             "errors": errors,
             "trades": [asdict(trade) for trade in trades],
         }
+
+    def _universe(self) -> list[MarketTicker]:
+        if not self.symbols:
+            return self.market_data.load_top_usdt_pairs(self.universe_size)
+        self.market_data.ensure_markets_loaded()
+        tickers = self.market_data.exchange.fetch_tickers(self.symbols)
+        universe: list[MarketTicker] = []
+        for rank, symbol in enumerate(self.symbols, start=1):
+            market = self.market_data.exchange.market(symbol)
+            if not self.market_data._is_tradeable_usdt_spot(symbol, market):
+                universe.append(MarketTicker(symbol=symbol, base=symbol.split("/")[0], quote_volume=-1, last=0))
+                continue
+            ticker = tickers.get(symbol) or {}
+            universe.append(
+                MarketTicker(
+                    symbol=symbol,
+                    base=str(market.get("base") or symbol.split("/")[0]),
+                    quote_volume=float(ticker.get("quoteVolume") or 0),
+                    last=float(ticker.get("last") or ticker.get("close") or 0),
+                )
+            )
+        return universe
 
     def _run_symbol(
         self,
@@ -304,11 +333,45 @@ def write_outputs(result: dict[str, Any], out_dir: Path) -> tuple[Path, Path]:
     return json_path, csv_path
 
 
+def normalize_symbols(value: str | None) -> list[str] | None:
+    if not value:
+        return None
+    aliases = {
+        "RIPPLE": "XRP",
+        "XRP": "XRP",
+        "SOLANA": "SOL",
+        "SOLANO": "SOL",
+        "SOL": "SOL",
+    }
+    symbols: list[str] = []
+    for raw in value.split(","):
+        token = raw.strip().upper()
+        if not token:
+            continue
+        if "/" in token:
+            symbols.append(token)
+        else:
+            symbols.append(f"{aliases.get(token, token)}/USDT")
+    return symbols
+
+
+def bars_for_days(days: float, timeframe: str) -> int:
+    units = {"m": 24 * 60, "h": 24, "d": 1}
+    suffix = timeframe[-1]
+    amount = int(timeframe[:-1])
+    per_day = units[suffix] / amount
+    return int(days * per_day)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest the Binance momentum strategy.")
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--bars", type=int, default=720)
     parser.add_argument("--days", type=float, default=None, help="Lookback days. Overrides --bars using 4H candles.")
+    parser.add_argument("--days-list", default=None, help="Comma-separated lookback days, e.g. 3,7,30")
+    parser.add_argument("--timeframe", default="4h")
+    parser.add_argument("--timeframes", default=None, help="Comma-separated timeframes, e.g. 1h,4h,1d")
+    parser.add_argument("--symbols", default=None, help="Comma-separated symbols/bases, e.g. ZEC,FET,XRP,SOL,TAO")
     parser.add_argument("--min-score", type=float, default=70)
     parser.add_argument("--account-size", type=float, default=1000)
     parser.add_argument("--risk-percent", type=float, default=1)
@@ -316,20 +379,39 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("data/backtests"))
     args = parser.parse_args()
 
-    bars = int(args.days * 6) if args.days is not None else args.bars
+    day_values = [float(item.strip()) for item in args.days_list.split(",")] if args.days_list else [args.days]
+    timeframes = [item.strip() for item in args.timeframes.split(",")] if args.timeframes else [args.timeframe]
+    requested_symbols = normalize_symbols(args.symbols)
+    results = []
 
-    engine = BacktestEngine(
-        BinanceMarketData(get_settings()),
-        universe_size=args.top,
-        bars=bars,
-        min_score=args.min_score,
-        account_size=args.account_size,
-        risk_percent=args.risk_percent,
-        fee_bps=args.fee_bps,
-    )
-    result = engine.run()
-    json_path, csv_path = write_outputs(result, args.out)
-    print(json.dumps({"summary": result["summary"], "symbols": result["symbols"], "errors": result["errors"], "json": str(json_path), "csv": str(csv_path)}, indent=2))
+    for timeframe in timeframes:
+        for days in day_values:
+            bars = bars_for_days(days, timeframe) if days is not None else args.bars
+            engine = BacktestEngine(
+                BinanceMarketData(get_settings()),
+                universe_size=args.top,
+                bars=bars,
+                min_score=args.min_score,
+                account_size=args.account_size,
+                risk_percent=args.risk_percent,
+                fee_bps=args.fee_bps,
+                timeframe=timeframe,
+                symbols=requested_symbols,
+            )
+            result = engine.run()
+            json_path, csv_path = write_outputs(result, args.out)
+            results.append(
+                {
+                    "timeframe": timeframe,
+                    "days": days,
+                    "summary": result["summary"],
+                    "symbols": result["symbols"],
+                    "errors": result["errors"],
+                    "json": str(json_path),
+                    "csv": str(csv_path),
+                }
+            )
+    print(json.dumps(results[0] if len(results) == 1 else {"runs": results}, indent=2))
 
 
 if __name__ == "__main__":
