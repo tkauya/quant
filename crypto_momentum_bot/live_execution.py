@@ -525,15 +525,15 @@ class GatedLiveExecutor:
             raise ValueError("Trade not found")
         if trade.get("status") != "open" or trade.get("execution_type") != "live":
             raise ValueError("Only open live trades can have exit orders retried")
-        result = self._place_momentum_exit_orders(
+        quantity = self.filters.round_quantity_down(
+            trade["symbol"],
+            float(trade.get("remaining_position_size") or trade.get("position_size") or 0) * 0.999,
+        )
+        result = self._place_full_stop_only(
             trade_id=trade_id,
             symbol=trade["symbol"],
-            filled_quantity=float(trade.get("position_size") or 0),
-            average_price=float(trade["entry_price"]),
+            quantity=quantity,
             stop_loss=float(trade["stop_loss"]),
-            take_profit_1=float(trade["take_profit_1"]),
-            take_profit_2=float(trade["take_profit_2"]),
-            entry_order={},
         )
         self._log("WARNING", f"Exit orders retried for trade {trade_id}", result)
         return result
@@ -734,6 +734,25 @@ class GatedLiveExecutor:
         }
         raw = exchange.privatePostOrder(params)
         return {"label": label, "type": "STOP_LOSS_LIMIT", "quantity": quantity, "params": params, "raw_order": raw}
+
+    def _place_full_stop_only(self, trade_id: int, symbol: str, quantity: float, stop_loss: float) -> dict[str, Any]:
+        if quantity <= 0:
+            return self._record_exit_order_failure(trade_id, "Retry failed: stop quantity rounded to zero")
+        try:
+            stop_order = self._place_stop_slice(trade_id, symbol, quantity, stop_loss, "full_protective_stop")
+        except Exception as exc:
+            return self._record_exit_order_failure(trade_id, f"Full protective stop retry failed: {exc}")
+        payload = {"status": "stop_only_placed", "reason": "OCO/staged exits failed; full protective stop placed", "order": stop_order}
+        self.db.execute(
+            """
+            UPDATE trades
+            SET exit_order_status = 'stop_only_placed',
+                exit_order_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(payload, default=str), trade_id),
+        )
+        return payload
 
     def _try_emergency_stop(
         self,

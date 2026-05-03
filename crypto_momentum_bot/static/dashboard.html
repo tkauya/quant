@@ -341,7 +341,7 @@
           <td class="${pnlClass(r.pnl_percent)}">${num(r.pnl_percent)}</td><td class="${pnlClass(r.pnl_usdt)}">${money(r.pnl_usdt)}</td>
           <td>${num(r.stop_loss)}</td><td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td>
           <td>${fmt(r.entry_reason || r.exit_reason)}</td>
-          <td>${r.execution_type === "live" && r.status === "open" && r.exit_order_status === "failed" ? `<button onclick="retryExits(${r.id})">Retry exits</button>` : ""}</td>
+          <td>${r.execution_type === "live" && r.status === "open" && r.exit_order_status !== "placed" && r.exit_order_status !== "stop_only_placed" ? `<button onclick="retryExits(${r.id})">Retry stop</button>` : ""}</td>
         </tr>`;
       }).join("");
       document.getElementById("portfolioTradesTable").innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
