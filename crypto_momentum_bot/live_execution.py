@@ -632,6 +632,18 @@ class GatedLiveExecutor:
         qty3 = self.filters.round_quantity_down(symbol, max(net_quantity - qty1 - qty2, 0))
         if min(qty1, qty2, qty3) <= 0:
             return self._record_exit_order_failure(trade_id, "One or more staged exit quantities rounded to zero")
+        if min(qty1, qty2, qty3) * average_price < 6:
+            fallback = self._place_protective_oco(
+                trade_id,
+                symbol,
+                filled_quantity,
+                average_price,
+                stop_loss,
+                take_profit_1,
+                entry_order,
+            )
+            fallback["fallback_reason"] = "Staged exit slices were below practical Binance minimum notional"
+            return fallback
 
         orders: list[dict[str, Any]] = []
         try:
@@ -644,6 +656,16 @@ class GatedLiveExecutor:
                 f"Momentum exit order placement failed for trade {trade_id}",
                 {"trade_id": trade_id, "symbol": symbol, "placed_orders": orders, "error": str(exc)},
             )
+            fallback = self._try_emergency_stop(
+                trade_id,
+                symbol,
+                max(net_quantity - sum(float(order.get("quantity") or 0) for order in orders), 0),
+                stop_loss,
+                orders,
+                str(exc),
+            )
+            if fallback.get("status") == "emergency_stop_placed":
+                return fallback
             return self._record_exit_order_failure(
                 trade_id,
                 f"Momentum exit order placement failed: {exc}",
@@ -700,6 +722,47 @@ class GatedLiveExecutor:
         }
         raw = exchange.privatePostOrder(params)
         return {"label": label, "type": "STOP_LOSS_LIMIT", "quantity": quantity, "params": params, "raw_order": raw}
+
+    def _try_emergency_stop(
+        self,
+        trade_id: int,
+        symbol: str,
+        quantity: float,
+        stop_loss: float,
+        placed_orders: list[dict[str, Any]],
+        original_error: str,
+    ) -> dict[str, Any]:
+        try:
+            quantity = self.filters.round_quantity_down(symbol, quantity)
+            if quantity <= 0:
+                raise ValueError("No remaining quantity available for emergency stop")
+            stop_order = self._place_stop_slice(trade_id, symbol, quantity, stop_loss, "emergency_stop")
+            payload = {
+                "status": "emergency_stop_placed",
+                "reason": "Staged exits failed; emergency stop placed for remaining quantity",
+                "original_error": original_error,
+                "placed_orders": placed_orders,
+                "emergency_stop": stop_order,
+            }
+            self.db.execute(
+                """
+                UPDATE trades
+                SET exit_order_status = 'emergency_stop_placed',
+                    exit_order_json = ?
+                WHERE id = ?
+                """,
+                (json.dumps(payload, default=str), trade_id),
+            )
+            self._log("ERROR", f"Emergency stop placed for trade {trade_id}", payload)
+            return payload
+        except Exception as fallback_exc:
+            return {
+                "status": "failed",
+                "reason": "Staged exits failed and emergency stop failed",
+                "original_error": original_error,
+                "fallback_error": str(fallback_exc),
+                "placed_orders": placed_orders,
+            }
 
     def _record_exit_order_failure(
         self,
