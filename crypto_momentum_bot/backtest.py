@@ -308,6 +308,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Backtest the Binance momentum strategy.")
     parser.add_argument("--top", type=int, default=10)
     parser.add_argument("--bars", type=int, default=720)
+    parser.add_argument("--days", type=float, default=None, help="Lookback days. Overrides --bars using 4H candles.")
     parser.add_argument("--min-score", type=float, default=70)
     parser.add_argument("--account-size", type=float, default=1000)
     parser.add_argument("--risk-percent", type=float, default=1)
@@ -315,10 +316,12 @@ def main() -> None:
     parser.add_argument("--out", type=Path, default=Path("data/backtests"))
     args = parser.parse_args()
 
+    bars = int(args.days * 6) if args.days is not None else args.bars
+
     engine = BacktestEngine(
         BinanceMarketData(get_settings()),
         universe_size=args.top,
-        bars=args.bars,
+        bars=bars,
         min_score=args.min_score,
         account_size=args.account_size,
         risk_percent=args.risk_percent,
