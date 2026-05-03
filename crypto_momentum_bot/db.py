@@ -55,6 +55,9 @@ CREATE TABLE IF NOT EXISTS trades (
     score_at_entry REAL,
     position_size REAL,
     exchange_order_id TEXT,
+    exit_order_list_id TEXT,
+    exit_order_status TEXT NOT NULL DEFAULT '',
+    exit_order_json TEXT NOT NULL DEFAULT '{}',
     execution_type TEXT NOT NULL DEFAULT 'paper',
     submitted_at TEXT,
     FOREIGN KEY(signal_id) REFERENCES signals(id)
@@ -153,6 +156,9 @@ class Database:
             },
             "trades": {
                 "exchange_order_id": "TEXT",
+                "exit_order_list_id": "TEXT",
+                "exit_order_status": "TEXT NOT NULL DEFAULT ''",
+                "exit_order_json": "TEXT NOT NULL DEFAULT '{}'",
                 "execution_type": "TEXT NOT NULL DEFAULT 'paper'",
                 "submitted_at": "TEXT",
             },

@@ -17,6 +17,7 @@ class AppSettings(BaseSettings):
     excluded_bases_extra: str = "TAO"
     enable_binance_live_trading: bool = False
     live_trading_unlocked: bool = False
+    auto_place_protective_oco: bool = True
     dashboard_auth_enabled: bool = False
     dashboard_username: str = "admin"
     dashboard_password: str = ""

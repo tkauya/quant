@@ -107,6 +107,18 @@ class BinanceFilterHelper:
     def _round_down(self, value: Decimal, step: Decimal) -> Decimal:
         return (value / step).to_integral_value(rounding=ROUND_DOWN) * step
 
+    def round_quantity_down(self, symbol: str, quantity: float) -> float:
+        market = self.market_data.exchange.market(symbol)
+        filters = {
+            item.get("filterType"): item
+            for item in market.get("info", {}).get("filters", [])
+        }
+        step_size = self._decimal_filter(filters, "LOT_SIZE", "stepSize")
+        value = Decimal(str(quantity))
+        if step_size:
+            value = self._round_down(value, step_size)
+        return float(value)
+
 
 class RiskGuard:
     def __init__(self, db: Database):
@@ -165,9 +177,10 @@ class GatedLiveExecutor:
     - store execution records in trades
 
     Important:
-    - This executes the live entry only.
-    - It does not place live stop-loss or take-profit orders.
-    - Exit management should be added separately.
+    - The live entry is still permissioned: approved intent + explicit submit.
+    - After a live buy fills, it can automatically place a protective Spot OCO
+      sell using TP1 and stop_loss.
+    - TP2 is retained as a planned runner target for later staged exits.
     """
 
     def __init__(self, db: Database, market_data: BinanceMarketData):
@@ -435,12 +448,28 @@ class GatedLiveExecutor:
             ),
         )
 
+        protective_exit: dict[str, Any] = {
+            "enabled": bool(self.market_data.settings.auto_place_protective_oco),
+            "status": "disabled",
+        }
+        if self.market_data.settings.auto_place_protective_oco:
+            protective_exit = self._place_protective_oco(
+                trade_id=trade_id,
+                symbol=symbol,
+                filled_quantity=filled_quantity,
+                average_price=average_price,
+                stop_loss=float(intent.get("stop_loss")),
+                take_profit_1=float(intent.get("take_profit_1")),
+                entry_order=order,
+            )
+
         submitted_payload = {
             "previous_validation": validation,
             "submitted": True,
             "exchange_order_id": exchange_order_id,
             "average_price": average_price,
             "filled_quantity": filled_quantity,
+            "protective_exit": protective_exit,
         }
 
         self.db.execute(
@@ -471,6 +500,7 @@ class GatedLiveExecutor:
                 "average_price": average_price,
                 "filled_quantity": filled_quantity,
                 "exchange_order_id": exchange_order_id,
+                "protective_exit": protective_exit,
                 "raw_order": order,
             },
         )
@@ -483,9 +513,141 @@ class GatedLiveExecutor:
             "average_price": average_price,
             "filled_quantity": filled_quantity,
             "exchange_order_id": exchange_order_id,
+            "protective_exit": protective_exit,
             "status": "submitted",
             "raw_order": order,
         }
+
+    def _place_protective_oco(
+        self,
+        trade_id: int,
+        symbol: str,
+        filled_quantity: float,
+        average_price: float,
+        stop_loss: float,
+        take_profit_1: float,
+        entry_order: dict[str, Any],
+    ) -> dict[str, Any]:
+        if filled_quantity <= 0:
+            return self._record_exit_order_failure(
+                trade_id,
+                "Filled quantity was zero; protective OCO was not placed",
+            )
+
+        if not (stop_loss < average_price < take_profit_1):
+            return self._record_exit_order_failure(
+                trade_id,
+                f"Invalid protective prices: stop={stop_loss}, entry={average_price}, tp1={take_profit_1}",
+            )
+
+        net_quantity = min(
+            filled_quantity - self._extract_base_fee(entry_order, symbol),
+            filled_quantity * 0.999,
+        )
+        quantity = self.filters.round_quantity_down(symbol, net_quantity)
+
+        if quantity <= 0:
+            return self._record_exit_order_failure(
+                trade_id,
+                "Rounded protective OCO quantity was zero",
+            )
+
+        stop_limit_price = stop_loss * 0.995
+        exchange = self.market_data.private_exchange()
+        market = self.market_data.exchange.market(symbol)
+        tp_price = self.market_data.exchange.price_to_precision(symbol, take_profit_1)
+        stop_price = self.market_data.exchange.price_to_precision(symbol, stop_loss)
+        stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_limit_price)
+        if float(stop_limit) >= float(stop_price):
+            stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_loss * 0.99)
+
+        params = {
+            "symbol": market["id"],
+            "side": "SELL",
+            "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
+            "price": tp_price,
+            "stopPrice": stop_price,
+            "stopLimitPrice": stop_limit,
+            "stopLimitTimeInForce": "GTC",
+        }
+
+        try:
+            order_list = exchange.privatePostOrderListOco(params)
+        except Exception as exc:
+            self._log(
+                "ERROR",
+                f"Protective OCO failed for trade {trade_id}",
+                {"trade_id": trade_id, "symbol": symbol, "params": params, "error": str(exc)},
+            )
+            return self._record_exit_order_failure(trade_id, str(exc), params)
+
+        order_list_id = self._extract_order_list_id(order_list)
+        payload = {
+            "status": "placed",
+            "order_list_id": order_list_id,
+            "symbol": symbol,
+            "quantity": quantity,
+            "take_profit_1": take_profit_1,
+            "stop_loss": stop_loss,
+            "stop_limit_price": stop_limit_price,
+            "params": params,
+            "raw_order": order_list,
+        }
+        self.db.execute(
+            """
+            UPDATE trades
+            SET exit_order_list_id = ?,
+                exit_order_status = 'placed',
+                exit_order_json = ?
+            WHERE id = ?
+            """,
+            (order_list_id, json.dumps(payload, default=str), trade_id),
+        )
+        self._log("INFO", f"Protective OCO placed for trade {trade_id}", payload)
+        return payload
+
+    def _record_exit_order_failure(
+        self,
+        trade_id: int,
+        reason: str,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        payload = {"status": "failed", "reason": reason, "params": params or {}}
+        self.db.execute(
+            """
+            UPDATE trades
+            SET exit_order_status = 'failed',
+                exit_order_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(payload, default=str), trade_id),
+        )
+        return payload
+
+    def _extract_base_fee(self, order: dict[str, Any], symbol: str) -> float:
+        base = symbol.split("/")[0]
+        fees = order.get("fees") or []
+        fee = order.get("fee")
+        if fee:
+            fees.append(fee)
+        fills = order.get("fills") or order.get("info", {}).get("fills") or []
+        for fill in fills:
+            commission = fill.get("commission")
+            commission_asset = fill.get("commissionAsset")
+            if commission and commission_asset:
+                fees.append({"cost": commission, "currency": commission_asset})
+        return sum(
+            float(item.get("cost") or 0)
+            for item in fees
+            if str(item.get("currency") or "").upper() == base
+        )
+
+    def _extract_order_list_id(self, order_list: dict[str, Any]) -> str | None:
+        for key in ("orderListId", "listClientOrderId", "id"):
+            value = order_list.get(key) or order_list.get("info", {}).get(key)
+            if value:
+                return str(value)
+        return None
 
     def _extract_order_id(self, order: dict[str, Any]) -> str | None:
         order_id = order.get("id")

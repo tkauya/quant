@@ -331,11 +331,11 @@
     }
 
     function renderPortfolioTrades(rows) {
-      const head = ["ID","Type","Symbol","Status","Entry time","Entry","Current/Exit","Qty","Entry value","Current value","PnL %","PnL USDT","Stop","TP1","TP2","Reason"];
+      const head = ["ID","Type","Symbol","Status","Exit order","Entry time","Entry","Current/Exit","Qty","Entry value","Current value","PnL %","PnL USDT","Stop","TP1","TP2","Reason"];
       const body = rows.map(r => {
         const currentOrExit = r.status === "open" ? r.current_price : r.exit_price;
         return `<tr>
-          <td>${r.id}</td><td>${fmt(r.execution_type || "paper")}</td><td>${r.symbol}</td><td>${r.status}</td><td>${fmt(r.entry_time)}</td>
+          <td>${r.id}</td><td>${fmt(r.execution_type || "paper")}</td><td>${r.symbol}</td><td>${r.status}</td><td>${fmt(r.exit_order_status || "")}</td><td>${fmt(r.entry_time)}</td>
           <td>${num(r.entry_price)}</td><td>${num(currentOrExit)}</td><td>${num(r.position_size)}</td>
           <td>${money(r.entry_value_usdt)}</td><td>${money(r.current_value_usdt)}</td>
           <td class="${pnlClass(r.pnl_percent)}">${num(r.pnl_percent)}</td><td class="${pnlClass(r.pnl_usdt)}">${money(r.pnl_usdt)}</td>
@@ -446,10 +446,10 @@
     }
 
     function renderTrades(rows, tableId, openOnly=false) {
-      const head = ["ID","Symbol","Signal time","Entry","Stop","TP1","TP2","Exit","Status","PnL %","PnL USDT","Entry reason","Exit reason","Score",""];
+      const head = ["ID","Symbol","Signal time","Entry","Stop","TP1","TP2","Exit","Status","Exit order","PnL %","PnL USDT","Entry reason","Exit reason","Score",""];
       const body = rows.map(r => `<tr>
         <td>${r.id}</td><td>${r.symbol}</td><td>${r.entry_time}</td><td>${num(r.entry_price)}</td><td>${num(r.stop_loss)}</td>
-        <td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td><td>${num(r.exit_price)}</td><td>${r.status}</td>
+        <td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td><td>${num(r.exit_price)}</td><td>${r.status}</td><td>${fmt(r.exit_order_status || "")}</td>
         <td>${num(r.pnl_percent)}</td><td>${num(r.pnl_usdt)}</td><td>${r.entry_reason}</td><td>${r.exit_reason}</td><td>${r.score_at_entry}</td>
         <td>${r.status === "open" ? `<button onclick="closeTrade(${r.id}, ${r.entry_price})">Close</button>` : ""}</td>
       </tr>`).join("");
