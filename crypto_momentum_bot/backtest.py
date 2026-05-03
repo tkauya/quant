@@ -48,6 +48,12 @@ class BacktestEngine:
         fee_bps: float = 10,
         timeframe: str = "4h",
         symbols: list[str] | None = None,
+        scalp_mode: bool = False,
+        scalp_stop_atr: float = 0.6,
+        scalp_tp1_r: float = 0.6,
+        scalp_tp2_r: float = 1.1,
+        scalp_max_hold_minutes: int = 90,
+        scalp_min_risk_pct: float = 0.0015,
     ):
         self.market_data = market_data
         self.universe_size = universe_size
@@ -58,6 +64,12 @@ class BacktestEngine:
         self.fee_bps = fee_bps
         self.timeframe = timeframe
         self.symbols = symbols
+        self.scalp_mode = scalp_mode
+        self.scalp_stop_atr = scalp_stop_atr
+        self.scalp_tp1_r = scalp_tp1_r
+        self.scalp_tp2_r = scalp_tp2_r
+        self.scalp_max_hold_minutes = scalp_max_hold_minutes
+        self.scalp_min_risk_pct = scalp_min_risk_pct
 
     def run(self) -> dict[str, Any]:
         universe = self._universe()
@@ -72,7 +84,12 @@ class BacktestEngine:
         for rank, ticker in enumerate(universe, start=1):
             try:
                 df = enrich(self.market_data.fetch_ohlcv(ticker.symbol, self.timeframe, limit=self.bars + 100))
-                trades.extend(self._run_symbol(ticker, rank, df, btc, eth))
+                trend_1h = None
+                trend_4h = None
+                if self.scalp_mode:
+                    trend_1h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1h", limit=max(120, int(self.bars / 12) + 100)))
+                    trend_4h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "4h", limit=max(120, int(self.bars / 48) + 100)))
+                trades.extend(self._run_symbol(ticker, rank, df, btc, eth, trend_1h, trend_4h))
             except Exception as exc:
                 errors.append(f"{ticker.symbol}: {exc}")
 
@@ -89,6 +106,15 @@ class BacktestEngine:
                 "entry": "Next 4H candle open after signal",
                 "exit": "Full size exits at TP1 or stop loss; if both touch same candle, stop is assumed first",
                 "fees": f"{self.fee_bps} bps per side",
+                "scalp_mode": self.scalp_mode,
+                "scalp_exit": "50% TP1, 50% TP2, hard time stop, or momentum-fade exit" if self.scalp_mode else None,
+                "scalp_params": {
+                    "stop_atr": self.scalp_stop_atr,
+                    "tp1_r": self.scalp_tp1_r,
+                    "tp2_r": self.scalp_tp2_r,
+                    "max_hold_minutes": self.scalp_max_hold_minutes,
+                    "min_risk_pct": self.scalp_min_risk_pct,
+                } if self.scalp_mode else None,
             },
             "summary": summary,
             "symbols": [ticker.symbol for ticker in universe],
@@ -125,6 +151,8 @@ class BacktestEngine:
         df: pd.DataFrame,
         btc: pd.DataFrame,
         eth: pd.DataFrame,
+        trend_1h: pd.DataFrame | None = None,
+        trend_4h: pd.DataFrame | None = None,
     ) -> list[BacktestTrade]:
         trades: list[BacktestTrade] = []
         warmup = 80
@@ -132,6 +160,9 @@ class BacktestEngine:
         max_i = len(df) - 2
 
         while i < max_i:
+            if self.scalp_mode and not self._higher_tf_bullish(df.iloc[i]["timestamp"], trend_1h, trend_4h):
+                i += 1
+                continue
             signal = self._signal_at(ticker.symbol, volume_rank, df, btc, eth, i)
             if signal["score"] < self.min_score:
                 i += 1
@@ -149,8 +180,14 @@ class BacktestEngine:
 
             risk_per_unit = entry_price - stop_loss
             risk_usdt = self.account_size * (self.risk_percent / 100)
-            quantity = risk_usdt / risk_per_unit if risk_per_unit > 0 else 0
-            fills = self._find_momentum_exits(df, entry_index, entry_price, stop_loss, take_profit_1, take_profit_2)
+            risk_quantity = risk_usdt / risk_per_unit if risk_per_unit > 0 else 0
+            max_quantity = self.account_size / entry_price if entry_price > 0 else 0
+            quantity = min(risk_quantity, max_quantity)
+            fills = (
+                self._find_scalp_exits(df, entry_index, entry_price, stop_loss, take_profit_1, take_profit_2)
+                if self.scalp_mode
+                else self._find_momentum_exits(df, entry_index, entry_price, stop_loss, take_profit_1, take_profit_2)
+            )
             exit_index = max(fill["index"] for fill in fills)
             exit_price = sum(fill["price"] * fill["fraction"] for fill in fills)
             outcome = "+".join(fill["label"] for fill in fills)
@@ -201,7 +238,7 @@ class BacktestEngine:
         obv_status = self._obv_status(latest, prev)
         macd_status = self._macd_status(latest, prev)
         relative_strength = self._relative_strength(current, btc.iloc[: i + 1], eth.iloc[: i + 1])
-        stop_loss, tp1, tp2, rr = self._risk_plan(current)
+        stop_loss, tp1, tp2, rr = self._scalp_risk_plan(current) if self.scalp_mode else self._risk_plan(current)
         score = self._score(volume_rank, latest, trend_status, volume_status, obv_status, macd_status, relative_strength, rr)
         return {
             "symbol": symbol,
@@ -250,6 +287,46 @@ class BacktestEngine:
         last_index = len(df) - 1
         if remaining > 0:
             fills.append({"index": last_index, "price": float(df.iloc[last_index]["close"]), "fraction": remaining, "label": "open_mark"})
+        return fills
+
+    def _find_scalp_exits(
+        self,
+        df: pd.DataFrame,
+        entry_index: int,
+        entry_price: float,
+        stop_loss: float,
+        take_profit_1: float,
+        take_profit_2: float,
+    ) -> list[dict[str, Any]]:
+        max_bars = max(1, int(self.scalp_max_hold_minutes / self._timeframe_minutes()))
+        remaining = 1.0
+        fills: list[dict[str, Any]] = []
+        tp1_done = False
+        last_index = min(len(df) - 1, entry_index + max_bars)
+
+        for j in range(entry_index, last_index + 1):
+            row = df.iloc[j]
+            low = float(row["low"])
+            high = float(row["high"])
+            if low <= stop_loss:
+                fills.append({"index": j, "price": stop_loss, "fraction": remaining, "label": "stop"})
+                return fills
+            if not tp1_done and high >= take_profit_1:
+                fills.append({"index": j, "price": take_profit_1, "fraction": 0.5, "label": "tp1"})
+                remaining = 0.5
+                tp1_done = True
+            if high >= take_profit_2:
+                fills.append({"index": j, "price": take_profit_2, "fraction": remaining, "label": "tp2"})
+                return fills
+            if j > entry_index + 1 and remaining > 0:
+                prev = df.iloc[j - 1]
+                momentum_faded = row["macd_hist"] < prev["macd_hist"] and row["rsi14"] < 50 and row["close"] < row["ema20"]
+                if momentum_faded:
+                    fills.append({"index": j, "price": float(row["close"]), "fraction": remaining, "label": "fade"})
+                    return fills
+
+        if remaining > 0:
+            fills.append({"index": last_index, "price": float(df.iloc[last_index]["close"]), "fraction": remaining, "label": "time_stop"})
         return fills
 
     def _trend_status(self, df: pd.DataFrame) -> str:
@@ -306,6 +383,43 @@ class BacktestEngine:
         tp2 = round(price + risk * 2.5, 8)
         rr = round(((1.5 * 0.33) + (2.5 * 0.33) + (2.5 * 0.34)), 2) if risk > 0 else 0
         return stop_loss, tp1, tp2, rr
+
+    def _scalp_risk_plan(self, df: pd.DataFrame) -> tuple[float, float, float, float]:
+        latest = df.iloc[-1]
+        price = float(latest["close"])
+        atr = float(latest["atr14"])
+        risk = max(atr * self.scalp_stop_atr, price * self.scalp_min_risk_pct)
+        stop_loss = round(price - risk, 8)
+        tp1 = round(price + risk * self.scalp_tp1_r, 8)
+        tp2 = round(price + risk * self.scalp_tp2_r, 8)
+        rr = round((self.scalp_tp1_r * 0.5) + (self.scalp_tp2_r * 0.5), 2)
+        return stop_loss, tp1, tp2, rr
+
+    def _higher_tf_bullish(
+        self,
+        timestamp: Any,
+        trend_1h: pd.DataFrame | None,
+        trend_4h: pd.DataFrame | None,
+    ) -> bool:
+        return self._trend_df_bullish(timestamp, trend_1h) or self._trend_df_bullish(timestamp, trend_4h)
+
+    def _trend_df_bullish(self, timestamp: Any, df: pd.DataFrame | None) -> bool:
+        if df is None or df.empty:
+            return False
+        current = df[df["timestamp"] <= timestamp]
+        if current.empty:
+            return False
+        latest = current.iloc[-1]
+        return bool(latest["close"] > latest["ema20"] > latest["ema50"])
+
+    def _timeframe_minutes(self) -> int:
+        suffix = self.timeframe[-1]
+        amount = int(self.timeframe[:-1])
+        if suffix == "m":
+            return amount
+        if suffix == "h":
+            return amount * 60
+        return amount * 1440
 
     def _score(
         self,
@@ -412,6 +526,12 @@ def main() -> None:
     parser.add_argument("--account-size", type=float, default=1000)
     parser.add_argument("--risk-percent", type=float, default=1)
     parser.add_argument("--fee-bps", type=float, default=10)
+    parser.add_argument("--scalp-mode", action="store_true")
+    parser.add_argument("--scalp-stop-atr", type=float, default=0.6)
+    parser.add_argument("--scalp-tp1-r", type=float, default=0.6)
+    parser.add_argument("--scalp-tp2-r", type=float, default=1.1)
+    parser.add_argument("--scalp-max-hold-minutes", type=int, default=90)
+    parser.add_argument("--scalp-min-risk-pct", type=float, default=0.0015)
     parser.add_argument("--out", type=Path, default=Path("data/backtests"))
     args = parser.parse_args()
 
@@ -433,6 +553,12 @@ def main() -> None:
                 fee_bps=args.fee_bps,
                 timeframe=timeframe,
                 symbols=requested_symbols,
+                scalp_mode=args.scalp_mode,
+                scalp_stop_atr=args.scalp_stop_atr,
+                scalp_tp1_r=args.scalp_tp1_r,
+                scalp_tp2_r=args.scalp_tp2_r,
+                scalp_max_hold_minutes=args.scalp_max_hold_minutes,
+                scalp_min_risk_pct=args.scalp_min_risk_pct,
             )
             result = engine.run()
             json_path, csv_path = write_outputs(result, args.out)

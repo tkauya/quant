@@ -37,13 +37,15 @@ class MomentumScanner:
             tickers = self.market_data.load_top_usdt_pairs(40)
             btc_4h = enrich(self.market_data.fetch_ohlcv("BTC/USDT", "4h"))
             eth_4h = enrich(self.market_data.fetch_ohlcv("ETH/USDT", "4h"))
+            btc_5m = enrich(self.market_data.fetch_ohlcv("BTC/USDT", "5m"))
+            eth_5m = enrich(self.market_data.fetch_ohlcv("ETH/USDT", "5m"))
             btc_trend = self._trend_label(btc_4h)
             eth_trend = self._trend_label(eth_4h)
             market_regime = self._market_regime(btc_trend, eth_trend)
 
             for rank, ticker in enumerate(tickers, start=1):
                 try:
-                    signal = self._build_signal(ticker, rank, btc_4h, eth_4h)
+                    signal = self._build_signal(ticker, rank, btc_5m, eth_5m)
                     signal_id = self._insert_signal(signal)
                     saved += 1
                     self._maybe_create_live_order_intent(signal_id, signal)
@@ -74,31 +76,32 @@ class MomentumScanner:
         self,
         ticker: MarketTicker,
         volume_rank: int,
-        btc_4h: pd.DataFrame,
-        eth_4h: pd.DataFrame,
+        btc_5m: pd.DataFrame,
+        eth_5m: pd.DataFrame,
     ) -> dict[str, Any]:
         daily = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1d"))
         four_h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "4h"))
         one_h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1h"))
+        five_m = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "5m"))
 
-        latest_4h = four_h.iloc[-1]
-        prev_4h = four_h.iloc[-2]
+        latest_5m = five_m.iloc[-1]
+        prev_5m = five_m.iloc[-2]
         latest_1h = one_h.iloc[-1]
         prev_1h = one_h.iloc[-2]
-        price = float(latest_4h["close"])
+        price = float(latest_5m["close"])
 
-        trend_status = self._trend_status(daily, four_h, one_h)
-        volume_status = self._volume_status(latest_4h)
-        obv_status = self._obv_status(latest_4h, prev_4h)
-        macd_status = self._macd_status(latest_4h, prev_4h, latest_1h, prev_1h)
-        relative_strength = self._relative_strength(four_h, btc_4h, eth_4h)
-        structure = self._structure_note(four_h)
-        entry_zone, stop_loss, tp1, tp2, rr = self._risk_plan(four_h)
-        breakdown = self._score(volume_rank, latest_4h, latest_1h, trend_status, volume_status, obv_status, macd_status, relative_strength, rr)
+        trend_status = self._trend_status(daily, four_h, one_h, five_m)
+        volume_status = self._volume_status(latest_5m)
+        obv_status = self._obv_status(latest_5m, prev_5m)
+        macd_status = self._macd_status(latest_5m, prev_5m, latest_1h, prev_1h)
+        relative_strength = self._relative_strength(five_m, btc_5m, eth_5m)
+        structure = self._structure_note(five_m)
+        entry_zone, stop_loss, tp1, tp2, rr = self._risk_plan(five_m)
+        breakdown = self._score(volume_rank, latest_5m, latest_1h, trend_status, volume_status, obv_status, macd_status, relative_strength, rr)
         breakdown_json = score_breakdown_to_dict(breakdown)
         setup_type = setup_type_from_note(structure)
-        volume_ratio = round(float(latest_4h["volume"] / latest_4h["vol_ma20"]), 4) if latest_4h["vol_ma20"] else 0
-        notes = "; ".join([structure, f"Score parts {breakdown}"])
+        volume_ratio = round(float(latest_5m["volume"] / latest_5m["vol_ma20"]), 4) if latest_5m["vol_ma20"] else 0
+        notes = "; ".join(["5m momentum swing profile", structure, f"Score parts {breakdown}"])
 
         return {
             "timestamp": now_iso(),
@@ -110,7 +113,7 @@ class MomentumScanner:
             "trend_status": trend_status,
             "volume_status": volume_status,
             "obv_status": obv_status,
-            "rsi": round(float(latest_4h["rsi14"]), 2),
+            "rsi": round(float(latest_5m["rsi14"]), 2),
             "macd_status": macd_status,
             "relative_strength": relative_strength,
             "entry_zone": entry_zone,
@@ -139,15 +142,16 @@ class MomentumScanner:
             return "risk-off"
         return "selective / mixed"
 
-    def _trend_status(self, daily: pd.DataFrame, four_h: pd.DataFrame, one_h: pd.DataFrame) -> str:
+    def _trend_status(self, daily: pd.DataFrame, four_h: pd.DataFrame, one_h: pd.DataFrame, five_m: pd.DataFrame) -> str:
         d = self._trend_label(daily)
         h4 = self._trend_label(four_h)
         h1 = self._trend_label(one_h)
-        if h4 == "bullish" and h1 == "bullish" and d in {"bullish", "mixed"}:
-            return "4H bullish, 1H aligned"
-        if h4 == "bullish":
-            return "4H bullish, 1H mixed"
-        if h4 == "mixed":
+        m5 = self._trend_label(five_m)
+        if m5 == "bullish" and h1 == "bullish" and h4 in {"bullish", "mixed"} and d in {"bullish", "mixed"}:
+            return "5m bullish, 1H aligned"
+        if m5 == "bullish" and h1 in {"bullish", "mixed"}:
+            return "5m bullish, 1H mixed"
+        if m5 == "mixed":
             return "mixed / basing"
         return "downtrend"
 
@@ -173,9 +177,9 @@ class MomentumScanner:
         expanding_4h = latest_4h["macd_hist"] > 0 and latest_4h["macd_hist"] > prev_4h["macd_hist"]
         expanding_1h = latest_1h["macd_hist"] > 0 and latest_1h["macd_hist"] > prev_1h["macd_hist"]
         if expanding_4h and expanding_1h:
-            return "positive expansion on 4H and 1H"
+            return "positive expansion on 5m and 1H"
         if expanding_4h:
-            return "positive expansion on 4H"
+            return "positive expansion on 5m"
         if latest_4h["macd_hist"] > 0:
             return "positive but fading"
         return "negative"
@@ -231,10 +235,10 @@ class MomentumScanner:
         rr: float,
     ) -> ScoreBreakdown:
         liquidity = clamp(21 - (volume_rank * 0.5), 4, 20)
-        trend = 20 if "4H bullish, 1H aligned" in trend_status else 14 if "4H bullish" in trend_status else 9 if "basing" in trend_status else 2
+        trend = 20 if "5m bullish, 1H aligned" in trend_status else 14 if "5m bullish" in trend_status else 9 if "basing" in trend_status else 2
         rsi = float(latest_4h["rsi14"])
         rsi_points = 8 if 50 <= rsi <= 75 else 4 if 45 <= rsi < 50 or 75 < rsi <= 82 else 1
-        macd_points = 8 if "4H and 1H" in macd_status else 6 if "4H" in macd_status else 3 if "positive" in macd_status else 0
+        macd_points = 8 if "5m and 1H" in macd_status else 6 if "5m" in macd_status else 3 if "positive" in macd_status else 0
         one_h_points = 4 if latest_1h["close"] > latest_1h["ema20"] else 0
         momentum = clamp(rsi_points + macd_points + one_h_points, 0, 20)
         volume_points = 8 if volume_status == "major expansion" else 6 if volume_status == "above average" else 3 if volume_status == "normal" else 0
@@ -297,7 +301,9 @@ class MomentumScanner:
         risk_pct = min(float(settings.get("risk_per_trade_percent") or 1), 10)
         risk_usdt = account_size * (risk_pct / 100)
         stop_distance = max(float(signal["price"]) - float(signal["stop_loss"]), signal["price"] * 0.005)
-        position_size = round(risk_usdt / stop_distance, 8) if stop_distance > 0 else 0
+        risk_size = risk_usdt / stop_distance if stop_distance > 0 else 0
+        max_size = account_size / float(signal["price"]) if signal["price"] else 0
+        position_size = round(min(risk_size, max_size), 8)
         self.db.execute(
             """
             INSERT INTO trades (
@@ -324,10 +330,24 @@ class MomentumScanner:
         if signal["score"] < 70:
             return
         existing = self.db.fetch_one(
-            "SELECT id FROM live_order_intents WHERE symbol = ? AND status = 'draft' LIMIT 1",
+            """
+            SELECT id FROM live_order_intents
+            WHERE symbol = ? AND status IN ('draft', 'approved', 'submitting', 'submitted')
+            LIMIT 1
+            """,
             (signal["symbol"],),
         )
         if existing:
+            return
+        open_trade = self.db.fetch_one(
+            """
+            SELECT id FROM trades
+            WHERE symbol = ? AND status = 'open' AND execution_type = 'live'
+            LIMIT 1
+            """,
+            (signal["symbol"],),
+        )
+        if open_trade:
             return
         signal_with_id = dict(signal)
         signal_with_id["id"] = signal_id
