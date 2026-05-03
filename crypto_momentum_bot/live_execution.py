@@ -702,38 +702,37 @@ class GatedLiveExecutor:
 
     def _oco_params(self, symbol: str, quantity: float, take_profit: float, stop_loss: float) -> dict[str, Any]:
         market = self.market_data.exchange.market(symbol)
-        stop_limit_price = stop_loss * 0.995
+        ticker = self.market_data.exchange.fetch_ticker(symbol)
+        last = float(ticker.get("last") or ticker.get("close") or 0)
+        if last and not (take_profit > last > stop_loss):
+            raise ValueError(f"Invalid OCO prices for current market: tp={take_profit}, last={last}, stop={stop_loss}")
         stop_price = self.market_data.exchange.price_to_precision(symbol, stop_loss)
-        stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_limit_price)
-        if float(stop_limit) >= float(stop_price):
-            stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_loss * 0.99)
         return {
             "symbol": market["id"],
             "side": "SELL",
             "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
             "aboveType": "LIMIT_MAKER",
             "abovePrice": self.market_data.exchange.price_to_precision(symbol, take_profit),
-            "belowType": "STOP_LOSS_LIMIT",
+            "belowType": "STOP_LOSS",
             "belowStopPrice": stop_price,
-            "belowPrice": stop_limit,
-            "belowTimeInForce": "GTC",
         }
 
     def _place_stop_slice(self, trade_id: int, symbol: str, quantity: float, stop_loss: float, label: str) -> dict[str, Any]:
         exchange = self.market_data.private_exchange()
         market = self.market_data.exchange.market(symbol)
-        stop_limit_price = stop_loss * 0.995
+        ticker = self.market_data.exchange.fetch_ticker(symbol)
+        last = float(ticker.get("last") or ticker.get("close") or 0)
+        if last and last <= stop_loss:
+            raise ValueError(f"Stop price would trigger immediately: last={last}, stop={stop_loss}")
         params = {
             "symbol": market["id"],
             "side": "SELL",
-            "type": "STOP_LOSS_LIMIT",
-            "timeInForce": "GTC",
+            "type": "STOP_LOSS",
             "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
             "stopPrice": self.market_data.exchange.price_to_precision(symbol, stop_loss),
-            "price": self.market_data.exchange.price_to_precision(symbol, stop_limit_price),
         }
         raw = exchange.privatePostOrder(params)
-        return {"label": label, "type": "STOP_LOSS_LIMIT", "quantity": quantity, "params": params, "raw_order": raw}
+        return {"label": label, "type": "STOP_LOSS", "quantity": quantity, "params": params, "raw_order": raw}
 
     def _place_full_stop_only(self, trade_id: int, symbol: str, quantity: float, stop_loss: float) -> dict[str, Any]:
         if quantity <= 0:
