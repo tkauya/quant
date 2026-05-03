@@ -1,3 +1,4 @@
+.DS_Store
 .venv/
 .pycache/
 __pycache__/
@@ -5,4 +6,6 @@ __pycache__/
 .env
 data/*.sqlite3
 data/*.sqlite3-*
+data/backtests/
 logs/*.log
+.*.swp

@@ -26,6 +26,7 @@ class BacktestTrade:
     exit_price: float
     stop_loss: float
     take_profit_1: float
+    take_profit_2: float
     score: float
     tier: str
     outcome: str
@@ -140,19 +141,23 @@ class BacktestEngine:
             entry_price = float(df.iloc[entry_index]["open"])
             stop_loss = float(signal["stop_loss"])
             take_profit_1 = float(signal["take_profit_1"])
+            take_profit_2 = float(signal["take_profit_2"])
 
-            if not (stop_loss < entry_price < take_profit_1):
+            if not (stop_loss < entry_price < take_profit_1 < take_profit_2):
                 i += 1
                 continue
 
-            exit_index, exit_price, outcome = self._find_exit(df, entry_index, stop_loss, take_profit_1)
             risk_per_unit = entry_price - stop_loss
             risk_usdt = self.account_size * (self.risk_percent / 100)
             quantity = risk_usdt / risk_per_unit if risk_per_unit > 0 else 0
-            gross_pnl = (exit_price - entry_price) * quantity
-            fee = (entry_price + exit_price) * quantity * (self.fee_bps / 10000)
+            fills = self._find_momentum_exits(df, entry_index, entry_price, stop_loss, take_profit_1, take_profit_2)
+            exit_index = max(fill["index"] for fill in fills)
+            exit_price = sum(fill["price"] * fill["fraction"] for fill in fills)
+            outcome = "+".join(fill["label"] for fill in fills)
+            gross_pnl = sum((fill["price"] - entry_price) * quantity * fill["fraction"] for fill in fills)
+            fee = (entry_price * quantity + sum(fill["price"] * quantity * fill["fraction"] for fill in fills)) * (self.fee_bps / 10000)
             pnl_usdt = gross_pnl - fee
-            pnl_percent = ((exit_price - entry_price) / entry_price) * 100 - (self.fee_bps * 2 / 100)
+            pnl_percent = (pnl_usdt / (entry_price * quantity)) * 100 if quantity else 0
             r_multiple = pnl_usdt / risk_usdt if risk_usdt else 0
 
             trades.append(
@@ -165,6 +170,7 @@ class BacktestEngine:
                     exit_price=round(exit_price, 8),
                     stop_loss=round(stop_loss, 8),
                     take_profit_1=round(take_profit_1, 8),
+                    take_profit_2=round(take_profit_2, 8),
                     score=signal["score"],
                     tier=classify(signal["score"]),
                     outcome=outcome,
@@ -195,27 +201,56 @@ class BacktestEngine:
         obv_status = self._obv_status(latest, prev)
         macd_status = self._macd_status(latest, prev)
         relative_strength = self._relative_strength(current, btc.iloc[: i + 1], eth.iloc[: i + 1])
-        stop_loss, tp1, rr = self._risk_plan(current)
+        stop_loss, tp1, tp2, rr = self._risk_plan(current)
         score = self._score(volume_rank, latest, trend_status, volume_status, obv_status, macd_status, relative_strength, rr)
         return {
             "symbol": symbol,
             "score": score.total,
             "stop_loss": stop_loss,
             "take_profit_1": tp1,
+            "take_profit_2": tp2,
             "reason": "; ".join([trend_status, volume_status, obv_status, macd_status, relative_strength]),
         }
 
-    def _find_exit(self, df: pd.DataFrame, entry_index: int, stop_loss: float, take_profit_1: float) -> tuple[int, float, str]:
+    def _find_momentum_exits(
+        self,
+        df: pd.DataFrame,
+        entry_index: int,
+        entry_price: float,
+        stop_loss: float,
+        take_profit_1: float,
+        take_profit_2: float,
+    ) -> list[dict[str, Any]]:
+        risk = entry_price - stop_loss
+        remaining = 1.0
+        fills: list[dict[str, Any]] = []
+        tp1_done = False
+        tp2_done = False
+        trail = stop_loss
+        high_water = entry_price
+
         for j in range(entry_index, len(df)):
             row = df.iloc[j]
-            hit_stop = float(row["low"]) <= stop_loss
-            hit_tp = float(row["high"]) >= take_profit_1
-            if hit_stop:
-                return j, stop_loss, "stop"
-            if hit_tp:
-                return j, take_profit_1, "tp1"
+            low = float(row["low"])
+            high = float(row["high"])
+            if low <= trail:
+                fills.append({"index": j, "price": trail, "fraction": remaining, "label": "trail_stop" if trail > stop_loss else "stop"})
+                return fills
+            if not tp1_done and high >= take_profit_1:
+                fills.append({"index": j, "price": take_profit_1, "fraction": 0.33, "label": "tp1"})
+                remaining -= 0.33
+                tp1_done = True
+            if not tp2_done and high >= take_profit_2:
+                fills.append({"index": j, "price": take_profit_2, "fraction": 0.33, "label": "tp2"})
+                remaining -= 0.33
+                tp2_done = True
+            high_water = max(high_water, high)
+            if tp1_done:
+                trail = max(trail, entry_price, high_water - risk)
         last_index = len(df) - 1
-        return last_index, float(df.iloc[last_index]["close"]), "open_mark"
+        if remaining > 0:
+            fills.append({"index": last_index, "price": float(df.iloc[last_index]["close"]), "fraction": remaining, "label": "open_mark"})
+        return fills
 
     def _trend_status(self, df: pd.DataFrame) -> str:
         latest = df.iloc[-1]
@@ -259,7 +294,7 @@ class BacktestEngine:
             return "outperforming one benchmark"
         return "lagging BTC/ETH"
 
-    def _risk_plan(self, df: pd.DataFrame) -> tuple[float, float, float]:
+    def _risk_plan(self, df: pd.DataFrame) -> tuple[float, float, float, float]:
         latest = df.iloc[-1]
         price = float(latest["close"])
         atr = float(latest["atr14"])
@@ -268,8 +303,9 @@ class BacktestEngine:
         stop_loss = round(max(raw_stop, price * 0.7), 8)
         risk = max(price - stop_loss, price * 0.005)
         tp1 = round(price + risk * 1.5, 8)
-        rr = round((tp1 - price) / risk, 2) if risk > 0 else 0
-        return stop_loss, tp1, rr
+        tp2 = round(price + risk * 2.5, 8)
+        rr = round(((1.5 * 0.33) + (2.5 * 0.33) + (2.5 * 0.34)), 2) if risk > 0 else 0
+        return stop_loss, tp1, tp2, rr
 
     def _score(
         self,

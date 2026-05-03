@@ -453,13 +453,14 @@ class GatedLiveExecutor:
             "status": "disabled",
         }
         if self.market_data.settings.auto_place_protective_oco:
-            protective_exit = self._place_protective_oco(
+            protective_exit = self._place_momentum_exit_orders(
                 trade_id=trade_id,
                 symbol=symbol,
                 filled_quantity=filled_quantity,
                 average_price=average_price,
                 stop_loss=float(intent.get("stop_loss")),
                 take_profit_1=float(intent.get("take_profit_1")),
+                take_profit_2=float(intent.get("take_profit_2")),
                 entry_order=order,
             )
 
@@ -605,6 +606,100 @@ class GatedLiveExecutor:
         )
         self._log("INFO", f"Protective OCO placed for trade {trade_id}", payload)
         return payload
+
+    def _place_momentum_exit_orders(
+        self,
+        trade_id: int,
+        symbol: str,
+        filled_quantity: float,
+        average_price: float,
+        stop_loss: float,
+        take_profit_1: float,
+        take_profit_2: float,
+        entry_order: dict[str, Any],
+    ) -> dict[str, Any]:
+        if filled_quantity <= 0:
+            return self._record_exit_order_failure(trade_id, "Filled quantity was zero; exits were not placed")
+        if not (stop_loss < average_price < take_profit_1 < take_profit_2):
+            return self._record_exit_order_failure(
+                trade_id,
+                f"Invalid exit prices: stop={stop_loss}, entry={average_price}, tp1={take_profit_1}, tp2={take_profit_2}",
+            )
+
+        net_quantity = min(filled_quantity - self._extract_base_fee(entry_order, symbol), filled_quantity * 0.999)
+        qty1 = self.filters.round_quantity_down(symbol, net_quantity * 0.33)
+        qty2 = self.filters.round_quantity_down(symbol, net_quantity * 0.33)
+        qty3 = self.filters.round_quantity_down(symbol, max(net_quantity - qty1 - qty2, 0))
+        if min(qty1, qty2, qty3) <= 0:
+            return self._record_exit_order_failure(trade_id, "One or more staged exit quantities rounded to zero")
+
+        orders: list[dict[str, Any]] = []
+        try:
+            orders.append(self._place_oco_slice(trade_id, symbol, qty1, take_profit_1, stop_loss, "tp1_33"))
+            orders.append(self._place_oco_slice(trade_id, symbol, qty2, take_profit_2, stop_loss, "tp2_33"))
+            orders.append(self._place_stop_slice(trade_id, symbol, qty3, stop_loss, "runner_34_stop"))
+        except Exception as exc:
+            self._log(
+                "ERROR",
+                f"Momentum exit order placement failed for trade {trade_id}",
+                {"trade_id": trade_id, "symbol": symbol, "placed_orders": orders, "error": str(exc)},
+            )
+            return self._record_exit_order_failure(
+                trade_id,
+                f"Momentum exit order placement failed: {exc}",
+                {"placed_orders": orders},
+            )
+
+        payload = {
+            "status": "placed",
+            "model": "momentum_33_33_34",
+            "symbol": symbol,
+            "quantity_total": net_quantity,
+            "orders": orders,
+        }
+        self.db.execute(
+            """
+            UPDATE trades
+            SET exit_order_status = 'placed',
+                exit_order_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(payload, default=str), trade_id),
+        )
+        self._log("INFO", f"Momentum exit orders placed for trade {trade_id}", payload)
+        return payload
+
+    def _place_oco_slice(self, trade_id: int, symbol: str, quantity: float, take_profit: float, stop_loss: float, label: str) -> dict[str, Any]:
+        exchange = self.market_data.private_exchange()
+        market = self.market_data.exchange.market(symbol)
+        stop_limit_price = stop_loss * 0.995
+        params = {
+            "symbol": market["id"],
+            "side": "SELL",
+            "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
+            "price": self.market_data.exchange.price_to_precision(symbol, take_profit),
+            "stopPrice": self.market_data.exchange.price_to_precision(symbol, stop_loss),
+            "stopLimitPrice": self.market_data.exchange.price_to_precision(symbol, stop_limit_price),
+            "stopLimitTimeInForce": "GTC",
+        }
+        raw = exchange.privatePostOrderListOco(params)
+        return {"label": label, "type": "OCO", "quantity": quantity, "params": params, "raw_order": raw}
+
+    def _place_stop_slice(self, trade_id: int, symbol: str, quantity: float, stop_loss: float, label: str) -> dict[str, Any]:
+        exchange = self.market_data.private_exchange()
+        market = self.market_data.exchange.market(symbol)
+        stop_limit_price = stop_loss * 0.995
+        params = {
+            "symbol": market["id"],
+            "side": "SELL",
+            "type": "STOP_LOSS_LIMIT",
+            "timeInForce": "GTC",
+            "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
+            "stopPrice": self.market_data.exchange.price_to_precision(symbol, stop_loss),
+            "price": self.market_data.exchange.price_to_precision(symbol, stop_limit_price),
+        }
+        raw = exchange.privatePostOrder(params)
+        return {"label": label, "type": "STOP_LOSS_LIMIT", "quantity": quantity, "params": params, "raw_order": raw}
 
     def _record_exit_order_failure(
         self,
