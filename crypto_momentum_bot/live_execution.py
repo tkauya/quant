@@ -535,8 +535,46 @@ class GatedLiveExecutor:
             quantity=quantity,
             stop_loss=float(trade["stop_loss"]),
         )
+        sync = self.sync_exit_orders_for_trade(trade_id)
+        if sync.get("protected"):
+            result = sync
         self._log("WARNING", f"Exit orders retried for trade {trade_id}", result)
         return result
+
+    def sync_exit_orders_for_trade(self, trade_id: int) -> dict[str, Any]:
+        trade = self.db.fetch_one("SELECT * FROM trades WHERE id = ?", (trade_id,))
+        if not trade:
+            raise ValueError("Trade not found")
+        symbol = trade["symbol"]
+        open_orders = self.market_data.private_exchange().fetch_open_orders(symbol)
+        protective_orders = [
+            order for order in open_orders
+            if str(order.get("side") or "").lower() == "sell"
+            and str(order.get("type") or "").upper() in {"STOP_LOSS", "STOP_LOSS_LIMIT", "TAKE_PROFIT", "TAKE_PROFIT_LIMIT", "LIMIT", "LIMIT_MAKER"}
+        ]
+        if protective_orders:
+            payload = {"status": "synced_protected", "protected": True, "open_orders": protective_orders}
+            self.db.execute(
+                """
+                UPDATE trades
+                SET exit_order_status = 'synced_protected',
+                    exit_order_json = ?
+                WHERE id = ?
+                """,
+                (json.dumps(payload, default=str), trade_id),
+            )
+            return payload
+        payload = {"status": "unprotected", "protected": False, "open_orders": open_orders}
+        self.db.execute(
+            """
+            UPDATE trades
+            SET exit_order_status = 'unprotected',
+                exit_order_json = ?
+            WHERE id = ?
+            """,
+            (json.dumps(payload, default=str), trade_id),
+        )
+        return payload
 
     def _place_protective_oco(
         self,

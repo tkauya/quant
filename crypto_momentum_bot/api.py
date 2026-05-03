@@ -266,6 +266,13 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 
+    @router.post("/trades/{trade_id}/sync-exits")
+    def sync_trade_exits(trade_id: int):
+        try:
+            return scanner.live_executor.sync_exit_orders_for_trade(trade_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @router.get("/trades/export.csv")
     def export_trades():
         csv_data = scanner.export_trades_csv()

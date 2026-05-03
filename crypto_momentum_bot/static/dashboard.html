@@ -341,7 +341,7 @@
           <td class="${pnlClass(r.pnl_percent)}">${num(r.pnl_percent)}</td><td class="${pnlClass(r.pnl_usdt)}">${money(r.pnl_usdt)}</td>
           <td>${num(r.stop_loss)}</td><td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td>
           <td>${fmt(r.entry_reason || r.exit_reason)}</td>
-          <td>${r.execution_type === "live" && r.status === "open" && r.exit_order_status !== "placed" && r.exit_order_status !== "stop_only_placed" ? `<button onclick="retryExits(${r.id})">Retry stop</button>` : ""}</td>
+          <td>${r.execution_type === "live" && r.status === "open" ? `<button onclick="syncExits(${r.id})">Sync</button> ${r.exit_order_status !== "placed" && r.exit_order_status !== "stop_only_placed" && r.exit_order_status !== "synced_protected" ? `<button onclick="retryExits(${r.id})">Retry stop</button>` : ""}` : ""}</td>
         </tr>`;
       }).join("");
       document.getElementById("portfolioTradesTable").innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
@@ -628,6 +628,10 @@
     }
     async function retryExits(id) {
       await api(`/api/trades/${id}/retry-exits`, {method:"POST"});
+      await refresh();
+    }
+    async function syncExits(id) {
+      await api(`/api/trades/${id}/sync-exits`, {method:"POST"});
       await refresh();
     }
     async function approveIntent(id) {
