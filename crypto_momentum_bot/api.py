@@ -259,6 +259,13 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
         scanner.close_trade(trade_id, req.exit_price, req.reason)
         return {"ok": True}
 
+    @router.post("/trades/{trade_id}/retry-exits")
+    def retry_trade_exits(trade_id: int):
+        try:
+            return scanner.live_executor.retry_exit_orders_for_trade(trade_id)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @router.get("/trades/export.csv")
     def export_trades():
         csv_data = scanner.export_trades_csv()

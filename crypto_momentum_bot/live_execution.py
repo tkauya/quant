@@ -519,6 +519,25 @@ class GatedLiveExecutor:
             "raw_order": order,
         }
 
+    def retry_exit_orders_for_trade(self, trade_id: int) -> dict[str, Any]:
+        trade = self.db.fetch_one("SELECT * FROM trades WHERE id = ?", (trade_id,))
+        if not trade:
+            raise ValueError("Trade not found")
+        if trade.get("status") != "open" or trade.get("execution_type") != "live":
+            raise ValueError("Only open live trades can have exit orders retried")
+        result = self._place_momentum_exit_orders(
+            trade_id=trade_id,
+            symbol=trade["symbol"],
+            filled_quantity=float(trade.get("position_size") or 0),
+            average_price=float(trade["entry_price"]),
+            stop_loss=float(trade["stop_loss"]),
+            take_profit_1=float(trade["take_profit_1"]),
+            take_profit_2=float(trade["take_profit_2"]),
+            entry_order={},
+        )
+        self._log("WARNING", f"Exit orders retried for trade {trade_id}", result)
+        return result
+
     def _place_protective_oco(
         self,
         trade_id: int,
@@ -553,24 +572,8 @@ class GatedLiveExecutor:
                 "Rounded protective OCO quantity was zero",
             )
 
-        stop_limit_price = stop_loss * 0.995
         exchange = self.market_data.private_exchange()
-        market = self.market_data.exchange.market(symbol)
-        tp_price = self.market_data.exchange.price_to_precision(symbol, take_profit_1)
-        stop_price = self.market_data.exchange.price_to_precision(symbol, stop_loss)
-        stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_limit_price)
-        if float(stop_limit) >= float(stop_price):
-            stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_loss * 0.99)
-
-        params = {
-            "symbol": market["id"],
-            "side": "SELL",
-            "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
-            "price": tp_price,
-            "stopPrice": stop_price,
-            "stopLimitPrice": stop_limit,
-            "stopLimitTimeInForce": "GTC",
-        }
+        params = self._oco_params(symbol, quantity, take_profit_1, stop_loss)
 
         try:
             order_list = exchange.privatePostOrderListOco(params)
@@ -590,7 +593,7 @@ class GatedLiveExecutor:
             "quantity": quantity,
             "take_profit_1": take_profit_1,
             "stop_loss": stop_loss,
-            "stop_limit_price": stop_limit_price,
+            "stop_limit_price": params.get("belowPrice"),
             "params": params,
             "raw_order": order_list,
         }
@@ -693,19 +696,28 @@ class GatedLiveExecutor:
 
     def _place_oco_slice(self, trade_id: int, symbol: str, quantity: float, take_profit: float, stop_loss: float, label: str) -> dict[str, Any]:
         exchange = self.market_data.private_exchange()
+        params = self._oco_params(symbol, quantity, take_profit, stop_loss)
+        raw = exchange.privatePostOrderListOco(params)
+        return {"label": label, "type": "OCO", "quantity": quantity, "params": params, "raw_order": raw}
+
+    def _oco_params(self, symbol: str, quantity: float, take_profit: float, stop_loss: float) -> dict[str, Any]:
         market = self.market_data.exchange.market(symbol)
         stop_limit_price = stop_loss * 0.995
-        params = {
+        stop_price = self.market_data.exchange.price_to_precision(symbol, stop_loss)
+        stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_limit_price)
+        if float(stop_limit) >= float(stop_price):
+            stop_limit = self.market_data.exchange.price_to_precision(symbol, stop_loss * 0.99)
+        return {
             "symbol": market["id"],
             "side": "SELL",
             "quantity": self.market_data.exchange.amount_to_precision(symbol, quantity),
-            "price": self.market_data.exchange.price_to_precision(symbol, take_profit),
-            "stopPrice": self.market_data.exchange.price_to_precision(symbol, stop_loss),
-            "stopLimitPrice": self.market_data.exchange.price_to_precision(symbol, stop_limit_price),
-            "stopLimitTimeInForce": "GTC",
+            "aboveType": "LIMIT_MAKER",
+            "abovePrice": self.market_data.exchange.price_to_precision(symbol, take_profit),
+            "belowType": "STOP_LOSS_LIMIT",
+            "belowStopPrice": stop_price,
+            "belowPrice": stop_limit,
+            "belowTimeInForce": "GTC",
         }
-        raw = exchange.privatePostOrderListOco(params)
-        return {"label": label, "type": "OCO", "quantity": quantity, "params": params, "raw_order": raw}
 
     def _place_stop_slice(self, trade_id: int, symbol: str, quantity: float, stop_loss: float, label: str) -> dict[str, Any]:
         exchange = self.market_data.private_exchange()
