@@ -120,6 +120,11 @@
       <div id="liveChecks" class="detail-grid" style="margin-top:10px"></div>
     </section>
 
+    <section class="panel">
+      <div class="section-head"><h2>Scan Result</h2><span class="small muted" id="scanState">Idle</span></div>
+      <div id="scanResult" class="detail-grid" style="margin-top:10px"></div>
+    </section>
+
     <section class="section">
       <div class="section-head"><h2>A. Active Trades</h2><span class="small muted" id="activeCount"></span></div>
       <div class="cards" id="activeTrades"></div>
@@ -246,6 +251,29 @@
       strategyGrid.innerHTML = items.map(([k,v,c]) => `<div class="panel metric"><span class="label">${k}</span><span class="value ${c || ""}">${v}</span></div>`).join("");
     }
 
+    function renderScanResult(dashboard) {
+      const scan = dashboard.scan_result || {};
+      const status = dashboard.scan_status || {};
+      scanState.textContent = status.is_scanning ? "Scanning now" : "Idle";
+      const items = [
+        ["Result", scan.message || "No scan result yet."],
+        ["Last scan", scan.last_scan_time ? time(scan.last_scan_time) : "Never"],
+        ["Scan started", status.last_started_at ? time(status.last_started_at) : "Never"],
+        ["Scan finished", status.last_finished_at ? time(status.last_finished_at) : "Never"],
+        ["Coins scanned", fmt(scan.coins_scanned)],
+        ["Signals stored", fmt(scan.signals_found)],
+        ["Eligible >= 70", fmt(scan.eligible_signals)],
+        ["Intents touched", `${fmt(scan.intents_touched)} (${fmt(scan.new_intents)} new, ${fmt(scan.repeated_intents)} repeat)`],
+        ["Top signal", scan.top_symbol ? `${scan.top_symbol} · ${num(scan.top_score)}` : "n/a"],
+        ["Scan error", status.last_error || "None"],
+      ];
+      scanResult.innerHTML = items.map(([k,v]) => `
+        <div class="metric panel">
+          <span class="label">${k}</span>
+          <span class="value">${v}</span>
+        </div>`).join("");
+    }
+
     function renderReadiness(live) {
       const checks = live.checks || [];
       liveChecks.innerHTML = checks.map(c => `
@@ -351,6 +379,7 @@
           api("/api/status"), api("/api/live/readiness"), api("/api/dashboard")
         ]);
         renderStatus(status, dashboard);
+        renderScanResult(dashboard);
         renderReadiness(live);
         renderCards("activeTrades", dashboard.active_trades || [], tradeCard, "No active live trades.");
         renderCards("exitIssues", dashboard.exit_issues || [], tradeCard, "No exit strategy issues.");
@@ -392,7 +421,13 @@
     }
     async function startBot(){ await withBusy("Starting bot and queueing scan...", async () => { await saveSettings(false); if (await applyModeSelection()) await api("/api/start", {method:"POST"}); await refresh(); }); }
     async function stopBot(){ await api("/api/stop", {method:"POST"}); await refresh(); }
-    async function scanNow(){ await withBusy("Queueing scan...", async () => { await api("/api/scan", {method:"POST"}); await refresh(); }); }
+    async function scanNow(){
+      await withBusy("Queueing scan...", async () => {
+        await api("/api/scan", {method:"POST"});
+        await refresh();
+        [5000, 15000, 30000].forEach(delay => setTimeout(refresh, delay));
+      });
+    }
     async function saveSettings(doRefresh=true){
       await api("/api/settings", {method:"POST", body:JSON.stringify({
         account_size:Number(accountSize.value), risk_per_trade_percent:Number(riskPct.value),

@@ -118,7 +118,9 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
     @router.get("/dashboard")
     def dashboard_lifecycle():
         try:
-            return scanner.get_dashboard_lifecycle()
+            dashboard = scanner.get_dashboard_lifecycle()
+            dashboard["scan_status"] = scheduler.scan_status()
+            return dashboard
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
 

@@ -526,6 +526,7 @@ class MomentumScanner:
             "refresh": refresh,
             "errors": errors[:8],
             "summary": strategy_summary,
+            "scan_result": self._latest_scan_result_summary(),
             "active_trades": active,
             "exit_issues": issues,
             "closed_trades": closed,
@@ -536,6 +537,74 @@ class MomentumScanner:
                 "executed": executed_intents,
             },
             "recent_events": self.db.fetch_all("SELECT * FROM trade_events ORDER BY timestamp DESC LIMIT 80"),
+        }
+
+    def _latest_scan_result_summary(self) -> dict[str, Any]:
+        status = self.db.fetch_one("SELECT last_scan_time, coins_scanned, errors FROM bot_status WHERE id = 1") or {}
+        last_scan = status.get("last_scan_time")
+        if not last_scan:
+            return {
+                "last_scan_time": None,
+                "coins_scanned": int(status.get("coins_scanned") or 0),
+                "signals_found": 0,
+                "eligible_signals": 0,
+                "intents_touched": 0,
+                "new_intents": 0,
+                "repeated_intents": 0,
+                "top_score": None,
+                "top_symbol": None,
+                "message": "No completed scan yet.",
+            }
+
+        signals = self.db.fetch_all(
+            """
+            SELECT symbol, score, tier
+            FROM signals
+            WHERE timestamp >= ?
+            ORDER BY score DESC, volume_rank ASC
+            """,
+            (last_scan,),
+        )
+        intents = self.db.fetch_all(
+            """
+            SELECT id, symbol, lifecycle_state, status, seen_count
+            FROM live_order_intents
+            WHERE scan_seen_at >= ?
+            ORDER BY scan_seen_at DESC
+            """,
+            (last_scan,),
+        )
+        eligible = [signal for signal in signals if float(signal.get("score") or 0) >= 70]
+        new_intents = [intent for intent in intents if intent.get("lifecycle_state") == "new"]
+        repeated_intents = [
+            intent for intent in intents
+            if intent.get("lifecycle_state") in {"seen", "stale"} or int(intent.get("seen_count") or 0) > 1
+        ]
+        top = signals[0] if signals else {}
+        errors = str(status.get("errors") or "").strip()
+        if errors:
+            message = "Scan completed with errors; check the compact error notice."
+        elif not signals:
+            message = "Scan completed, but no signal rows were stored."
+        elif not eligible:
+            message = "Scan completed; no plays met the live-intent threshold."
+        elif not intents:
+            message = "Scan found eligible signals, but no intents were created because they were already active/traded or blocked."
+        elif new_intents:
+            message = f"Scan found {len(new_intents)} new intent(s)."
+        else:
+            message = "Scan ran; eligible plays were repeats or already seen."
+        return {
+            "last_scan_time": last_scan,
+            "coins_scanned": int(status.get("coins_scanned") or 0),
+            "signals_found": len(signals),
+            "eligible_signals": len(eligible),
+            "intents_touched": len(intents),
+            "new_intents": len(new_intents),
+            "repeated_intents": len(repeated_intents),
+            "top_score": round(float(top.get("score")), 2) if top.get("score") is not None else None,
+            "top_symbol": top.get("symbol"),
+            "message": message,
         }
 
     def _strategy_performance_summary(
