@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, HTTPException, Response
@@ -47,6 +48,10 @@ class TradePermissionTestRequest(BaseModel):
 
 class RejectIntentRequest(BaseModel):
     reason: str = "Rejected manually"
+
+
+class ManualCloseRequest(BaseModel):
+    reason: str = "Closed manually outside the app"
 
 
 def create_router(db: Database, scanner: MomentumScanner, scheduler: BotScheduler) -> APIRouter:
@@ -110,6 +115,13 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
     def portfolio():
         return scanner.get_portfolio()
 
+    @router.get("/dashboard")
+    def dashboard_lifecycle():
+        try:
+            return scanner.get_dashboard_lifecycle()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @router.post("/portfolio/refresh")
     def refresh_portfolio():
         try:
@@ -156,6 +168,50 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
             return {"status": "rejected"}
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @router.post("/live/intents/{intent_id}/seen")
+    def mark_live_order_intent_seen(intent_id: int):
+        intent = db.fetch_one("SELECT * FROM live_order_intents WHERE id = ?", (intent_id,))
+        if not intent:
+            raise HTTPException(status_code=404, detail="Live order intent not found")
+        db.execute(
+            "UPDATE live_order_intents SET lifecycle_state = 'seen', last_status_reason = 'Marked seen by user' WHERE id = ?",
+            (intent_id,),
+        )
+        scanner.record_trade_event(
+            None,
+            "intent_seen",
+            f"Live order intent {intent_id} marked seen",
+            {"intent_id": intent_id},
+            intent_id=intent_id,
+            symbol=intent.get("symbol"),
+        )
+        return {"status": "seen"}
+
+    @router.post("/live/intents/{intent_id}/archive")
+    def archive_live_order_intent(intent_id: int):
+        intent = db.fetch_one("SELECT * FROM live_order_intents WHERE id = ?", (intent_id,))
+        if not intent:
+            raise HTTPException(status_code=404, detail="Live order intent not found")
+        db.execute(
+            """
+            UPDATE live_order_intents
+            SET lifecycle_state = 'archived',
+                archived_at = ?,
+                last_status_reason = 'Archived by user'
+            WHERE id = ?
+            """,
+            (datetime.now(timezone.utc).isoformat(), intent_id),
+        )
+        scanner.record_trade_event(
+            None,
+            "intent_archived",
+            f"Live order intent {intent_id} archived",
+            {"intent_id": intent_id},
+            intent_id=intent_id,
+            symbol=intent.get("symbol"),
+        )
+        return {"status": "archived"}
 
     @router.post("/live/intents/{intent_id}/submit")
     def submit_live_order_intent(intent_id: int):
@@ -279,6 +335,20 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
             return scanner.live_executor.sync_exit_orders_for_trade(trade_id)
         except Exception as exc:
             raise HTTPException(status_code=400, detail=str(exc))
+
+    @router.post("/trades/{trade_id}/mark-manually-closed")
+    def mark_trade_manually_closed(trade_id: int, req: ManualCloseRequest):
+        try:
+            return scanner.mark_trade_manually_closed(trade_id, req.reason)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
+    @router.get("/trades/{trade_id}/events")
+    def trade_events(trade_id: int):
+        return db.fetch_all(
+            "SELECT * FROM trade_events WHERE trade_id = ? ORDER BY timestamp DESC LIMIT 80",
+            (trade_id,),
+        )
 
     @router.get("/trades/export.csv")
     def export_trades():

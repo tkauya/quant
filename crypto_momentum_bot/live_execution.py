@@ -260,11 +260,18 @@ class GatedLiveExecutor:
             raise ValueError(f"Cannot approve invalid intent: {validation}")
 
         self.db.execute(
-            "UPDATE live_order_intents SET status = 'approved' WHERE id = ?",
+            "UPDATE live_order_intents SET status = 'approved', lifecycle_state = 'seen' WHERE id = ?",
             (intent_id,),
         )
 
         self._log("INFO", f"Live order intent {intent_id} approved", intent)
+        self._record_trade_event(
+            intent_id=intent_id,
+            symbol=intent.get("symbol"),
+            event_type="intent_approved",
+            message=f"Live order intent {intent_id} approved",
+            context=intent,
+        )
 
         return self.db.fetch_one(
             "SELECT * FROM live_order_intents WHERE id = ?",
@@ -288,16 +295,26 @@ class GatedLiveExecutor:
             """
             UPDATE live_order_intents
             SET status = 'rejected',
+                lifecycle_state = 'ignored',
+                ignored_at = ?,
+                last_status_reason = ?,
                 reason = reason || ?
             WHERE id = ?
             """,
-            (f" | {reason}", intent_id),
+            (datetime.now(timezone.utc).isoformat(), reason, f" | {reason}", intent_id),
         )
 
         self._log(
             "INFO",
             f"Live order intent {intent_id} rejected",
             {"intent_id": intent_id, "reason": reason},
+        )
+        self._record_trade_event(
+            intent_id=intent_id,
+            symbol=intent.get("symbol"),
+            event_type="intent_ignored",
+            message=f"Live order intent {intent_id} ignored/rejected",
+            context={"intent_id": intent_id, "reason": reason},
         )
 
     def submit_approved_intent(self, intent_id: int) -> dict[str, Any]:
@@ -342,6 +359,27 @@ class GatedLiveExecutor:
             raise LiveExecutionDisabled(f"Intent validation failed: {validation}")
 
         symbol = intent["symbol"]
+        conflict = self.exit_strategy_conflict(symbol)
+        if conflict.get("blocked"):
+            self.db.execute(
+                """
+                UPDATE live_order_intents
+                SET lifecycle_state = 'seen',
+                    last_status_reason = ?
+                WHERE id = ?
+                """,
+                (conflict["reason"], intent_id),
+            )
+            self._record_trade_event(
+                intent_id=intent_id,
+                symbol=symbol,
+                event_type="exit_conflict_blocked_buy",
+                level="WARNING",
+                message=f"Live buy blocked for {symbol}: {conflict['reason']}",
+                context=conflict,
+            )
+            raise LiveExecutionDisabled(conflict["reason"])
+
         quote_amount = float(
             validation.get("adjusted_quote_amount") or intent["quote_amount"]
         )
@@ -353,10 +391,18 @@ class GatedLiveExecutor:
             """
             UPDATE live_order_intents
             SET status = 'submitting',
+                lifecycle_state = 'seen',
                 submitted_at = ?
             WHERE id = ?
             """,
             (datetime.now(timezone.utc).isoformat(), intent_id),
+        )
+        self._record_trade_event(
+            intent_id=intent_id,
+            symbol=symbol,
+            event_type="trade_submitted",
+            message=f"Submitting Binance market buy for {symbol}",
+            context={"intent_id": intent_id, "quote_amount": quote_amount},
         )
 
         try:
@@ -376,10 +422,13 @@ class GatedLiveExecutor:
                 """
                 UPDATE live_order_intents
                 SET status = 'failed',
+                    lifecycle_state = 'stale',
+                    last_status_reason = ?,
                     validation_json = ?
                 WHERE id = ?
                 """,
                 (
+                    str(exc),
                     json.dumps(
                         {
                             "previous_validation": validation,
@@ -425,13 +474,15 @@ class GatedLiveExecutor:
                 take_profit_1,
                 take_profit_2,
                 status,
+                lifecycle_state,
+                exit_strategy_state,
                 entry_reason,
                 exit_reason,
                 score_at_entry,
                 position_size,
                 exchange_order_id,
                 execution_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, '', ?, ?, ?, 'live')
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 'bought', 'pending', ?, '', ?, ?, ?, 'live')
             """,
             (
                 intent.get("signal_id"),
@@ -446,6 +497,21 @@ class GatedLiveExecutor:
                 filled_quantity,
                 exchange_order_id,
             ),
+        )
+        self._record_trade_event(
+            trade_id=trade_id,
+            intent_id=intent_id,
+            symbol=symbol,
+            event_type="buy_filled",
+            message=f"Binance buy filled for {symbol}",
+            context={
+                "intent_id": intent_id,
+                "trade_id": trade_id,
+                "order": order,
+                "average_price": average_price,
+                "filled_quantity": filled_quantity,
+                "exchange_order_id": exchange_order_id,
+            },
         )
 
         protective_exit: dict[str, Any] = {
@@ -477,15 +543,18 @@ class GatedLiveExecutor:
             """
             UPDATE live_order_intents
             SET status = 'submitted',
+                lifecycle_state = 'executed',
                 validation_json = ?,
                 exchange_order_id = ?,
-                submitted_at = ?
+                submitted_at = ?,
+                executed_trade_id = ?
             WHERE id = ?
             """,
             (
                 json.dumps(submitted_payload, default=str),
                 exchange_order_id,
                 datetime.now(timezone.utc).isoformat(),
+                trade_id,
                 intent_id,
             ),
         )
@@ -529,6 +598,18 @@ class GatedLiveExecutor:
             trade["symbol"],
             float(trade.get("remaining_position_size") or trade.get("position_size") or 0) * 0.999,
         )
+        conflict = self.exit_strategy_conflict(trade["symbol"], current_trade_id=trade_id)
+        if conflict.get("blocked"):
+            self._record_exit_order_failure(trade_id, conflict["reason"], conflict)
+            self._record_trade_event(
+                trade_id=trade_id,
+                symbol=trade["symbol"],
+                event_type="exit_strategy_blocked",
+                level="WARNING",
+                message=conflict["reason"],
+                context=conflict,
+            )
+            return {"status": "blocked", **conflict}
         result = self._place_full_stop_only(
             trade_id=trade_id,
             symbol=trade["symbol"],
@@ -558,6 +639,8 @@ class GatedLiveExecutor:
                 """
                 UPDATE trades
                 SET exit_order_status = 'synced_protected',
+                    exit_strategy_state = 'active',
+                    lifecycle_state = CASE WHEN status IN ('open', 'partial', 'partially_closed') THEN 'exit_strategy_active' ELSE lifecycle_state END,
                     exit_order_json = ?
                 WHERE id = ?
                 """,
@@ -569,6 +652,8 @@ class GatedLiveExecutor:
             """
             UPDATE trades
             SET exit_order_status = 'unprotected',
+                exit_strategy_state = 'pending',
+                lifecycle_state = CASE WHEN status IN ('open', 'partial', 'partially_closed') THEN 'exit_strategy_pending' ELSE lifecycle_state END,
                 exit_order_json = ?
             WHERE id = ?
             """,
@@ -610,6 +695,10 @@ class GatedLiveExecutor:
                 "Rounded protective OCO quantity was zero",
             )
 
+        conflict = self.exit_strategy_conflict(symbol, current_trade_id=trade_id)
+        if conflict.get("blocked"):
+            return self._record_exit_order_failure(trade_id, conflict["reason"], conflict)
+
         exchange = self.market_data.private_exchange()
         params = self._oco_params(symbol, quantity, take_profit_1, stop_loss)
 
@@ -640,12 +729,21 @@ class GatedLiveExecutor:
             UPDATE trades
             SET exit_order_list_id = ?,
                 exit_order_status = 'placed',
+                exit_strategy_state = 'active',
+                lifecycle_state = 'exit_strategy_active',
                 exit_order_json = ?
             WHERE id = ?
             """,
             (order_list_id, json.dumps(payload, default=str), trade_id),
         )
         self._log("INFO", f"Protective OCO placed for trade {trade_id}", payload)
+        self._record_trade_event(
+            trade_id=trade_id,
+            symbol=symbol,
+            event_type="exit_strategy_active",
+            message=f"Protective OCO placed for trade {trade_id}",
+            context=payload,
+        )
         return payload
 
     def _place_momentum_exit_orders(
@@ -686,6 +784,10 @@ class GatedLiveExecutor:
             fallback["fallback_reason"] = "Staged exit slices were below practical Binance minimum notional"
             return fallback
 
+        conflict = self.exit_strategy_conflict(symbol, current_trade_id=trade_id)
+        if conflict.get("blocked"):
+            return self._record_exit_order_failure(trade_id, conflict["reason"], conflict)
+
         orders: list[dict[str, Any]] = []
         try:
             orders.append(self._place_oco_slice(trade_id, symbol, qty1, take_profit_1, stop_loss, "tp1_33"))
@@ -724,12 +826,21 @@ class GatedLiveExecutor:
             """
             UPDATE trades
             SET exit_order_status = 'placed',
+                exit_strategy_state = 'active',
+                lifecycle_state = 'exit_strategy_active',
                 exit_order_json = ?
             WHERE id = ?
             """,
             (json.dumps(payload, default=str), trade_id),
         )
         self._log("INFO", f"Momentum exit orders placed for trade {trade_id}", payload)
+        self._record_trade_event(
+            trade_id=trade_id,
+            symbol=symbol,
+            event_type="exit_strategy_active",
+            message=f"Momentum exit orders placed for trade {trade_id}",
+            context=payload,
+        )
         return payload
 
     def _place_oco_slice(self, trade_id: int, symbol: str, quantity: float, take_profit: float, stop_loss: float, label: str) -> dict[str, Any]:
@@ -784,10 +895,19 @@ class GatedLiveExecutor:
             """
             UPDATE trades
             SET exit_order_status = 'stop_only_placed',
+                exit_strategy_state = 'active',
+                lifecycle_state = 'exit_strategy_active',
                 exit_order_json = ?
             WHERE id = ?
             """,
             (json.dumps(payload, default=str), trade_id),
+        )
+        self._record_trade_event(
+            trade_id=trade_id,
+            symbol=symbol,
+            event_type="exit_strategy_active",
+            message=f"Protective stop placed for trade {trade_id}",
+            context=payload,
         )
         return payload
 
@@ -816,6 +936,8 @@ class GatedLiveExecutor:
                 """
                 UPDATE trades
                 SET exit_order_status = 'emergency_stop_placed',
+                    exit_strategy_state = 'active',
+                    lifecycle_state = 'exit_strategy_active',
                     exit_order_json = ?
                 WHERE id = ?
                 """,
@@ -843,12 +965,64 @@ class GatedLiveExecutor:
             """
             UPDATE trades
             SET exit_order_status = 'failed',
+                exit_strategy_state = 'failed',
+                lifecycle_state = CASE WHEN status IN ('open', 'partial', 'partially_closed') THEN 'exit_strategy_pending' ELSE lifecycle_state END,
+                exit_warning = ?,
                 exit_order_json = ?
             WHERE id = ?
             """,
-            (json.dumps(payload, default=str), trade_id),
+            (reason, json.dumps(payload, default=str), trade_id),
+        )
+        self._record_trade_event(
+            trade_id=trade_id,
+            event_type="exit_strategy_failed",
+            level="ERROR",
+            message=reason,
+            context=payload,
         )
         return payload
+
+    def exit_strategy_conflict(self, symbol: str, current_trade_id: int | None = None) -> dict[str, Any]:
+        active_trade = self.db.fetch_one(
+            """
+            SELECT id, symbol, status, lifecycle_state, exit_order_status
+            FROM trades
+            WHERE symbol = ?
+              AND execution_type = 'live'
+              AND status IN ('open', 'submitted', 'bought', 'partial', 'partially_closed')
+              AND id <> COALESCE(?, -1)
+            ORDER BY entry_time DESC
+            LIMIT 1
+            """,
+            (symbol, current_trade_id),
+        )
+        if active_trade:
+            return {
+                "blocked": True,
+                "reason": f"Existing active live trade {active_trade['id']} for {symbol}; duplicate exit strategy was not created.",
+                "active_trade": active_trade,
+            }
+
+        try:
+            open_orders = self.market_data.private_exchange().fetch_open_orders(symbol)
+        except Exception as exc:
+            return {
+                "blocked": True,
+                "reason": f"Could not check existing Binance open orders for {symbol}: {exc}",
+                "error": str(exc),
+            }
+
+        sell_orders = [
+            order for order in open_orders
+            if str(order.get("side") or "").lower() == "sell"
+        ]
+        if sell_orders:
+            return {
+                "blocked": True,
+                "reason": f"Binance already has {len(sell_orders)} open sell/exit order(s) for {symbol}; duplicate exit strategy was not created.",
+                "open_sell_orders": sell_orders,
+            }
+        return {"blocked": False, "reason": ""}
 
     def _extract_base_fee(self, order: dict[str, Any], symbol: str) -> float:
         base = symbol.split("/")[0]
@@ -964,6 +1138,33 @@ class GatedLiveExecutor:
             """,
             (
                 datetime.now(timezone.utc).isoformat(),
+                level,
+                message,
+                json.dumps(context or {}, default=str),
+            ),
+        )
+
+    def _record_trade_event(
+        self,
+        event_type: str,
+        message: str,
+        trade_id: int | None = None,
+        intent_id: int | None = None,
+        symbol: str | None = None,
+        level: str = "INFO",
+        context: dict[str, Any] | None = None,
+    ) -> None:
+        self.db.execute(
+            """
+            INSERT INTO trade_events (timestamp, trade_id, intent_id, symbol, event_type, level, message, context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                datetime.now(timezone.utc).isoformat(),
+                trade_id,
+                intent_id,
+                symbol,
+                event_type,
                 level,
                 message,
                 json.dumps(context or {}, default=str),

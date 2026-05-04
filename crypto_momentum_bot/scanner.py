@@ -308,8 +308,8 @@ class MomentumScanner:
             """
             INSERT INTO trades (
                 signal_id, symbol, entry_time, entry_price, stop_loss, take_profit_1,
-                take_profit_2, status, entry_reason, score_at_entry, position_size
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                take_profit_2, status, lifecycle_state, entry_reason, score_at_entry, position_size
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', 'bought', ?, ?, ?)
             """,
             (
                 signal_id,
@@ -331,13 +331,42 @@ class MomentumScanner:
             return
         existing = self.db.fetch_one(
             """
-            SELECT id FROM live_order_intents
-            WHERE symbol = ? AND status IN ('draft', 'approved', 'submitting', 'submitted')
+            SELECT id, lifecycle_state, status, seen_count FROM live_order_intents
+            WHERE symbol = ?
+              AND lifecycle_state NOT IN ('ignored', 'executed', 'archived')
+            ORDER BY timestamp DESC
             LIMIT 1
             """,
             (signal["symbol"],),
         )
         if existing:
+            lifecycle = "stale" if existing.get("lifecycle_state") == "stale" else "seen"
+            self.db.execute(
+                """
+                UPDATE live_order_intents
+                SET signal_id = ?,
+                    last_seen_at = ?,
+                    scan_seen_at = ?,
+                    seen_count = COALESCE(seen_count, 1) + 1,
+                    lifecycle_state = ?,
+                    reference_price = ?,
+                    stop_loss = ?,
+                    take_profit_1 = ?,
+                    take_profit_2 = ?
+                WHERE id = ?
+                """,
+                (
+                    signal_id,
+                    now_iso(),
+                    signal["timestamp"],
+                    lifecycle,
+                    signal["price"],
+                    signal["stop_loss"],
+                    signal["take_profit_1"],
+                    signal["take_profit_2"],
+                    existing["id"],
+                ),
+            )
             return
         open_trade = self.db.fetch_one(
             """
@@ -371,8 +400,9 @@ class MomentumScanner:
             INSERT INTO live_order_intents (
                 timestamp, signal_id, symbol, side, order_type, quote_amount,
                 base_quantity, reference_price, stop_loss, take_profit_1,
-                take_profit_2, status, validation_json, reason, ev_json
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', ?, ?, ?)
+                take_profit_2, status, lifecycle_state, first_seen_at, last_seen_at,
+                scan_seen_at, seen_count, validation_json, reason, ev_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'draft', 'new', ?, ?, ?, 1, ?, ?, ?)
             """,
             (
                 now_iso(),
@@ -386,6 +416,9 @@ class MomentumScanner:
                 intent.stop_loss,
                 intent.take_profit_1,
                 intent.take_profit_2,
+                signal["timestamp"],
+                signal["timestamp"],
+                signal["timestamp"],
                 json.dumps(validation, default=str),
                 intent.reason,
                 json.dumps(ev, default=str),
@@ -423,6 +456,7 @@ class MomentumScanner:
 
     def get_quant_snapshot(self) -> dict[str, Any]:
         self.recover_stuck_submitting_intents()
+        self.mark_stale_intents()
         db_status = self.db.fetch_one("SELECT * FROM bot_status WHERE id = 1") or {}
         settings = self.db.fetch_one("SELECT * FROM settings WHERE id = 1") or {}
         signals = [self._enrich_signal_quant(row) for row in self._latest_signals(limit=80)]
@@ -448,6 +482,58 @@ class MomentumScanner:
             "signals": signals,
             "live_intents": intents,
             "market_regime": db_status.get("market_regime", "unknown"),
+            "last_refreshed_at": now_iso(),
+        }
+
+    def get_dashboard_lifecycle(self) -> dict[str, Any]:
+        self.mark_stale_intents()
+        refresh = self.refresh_live_portfolio_state()
+        trades = self.get_trade_history(limit=500)
+        active_states = {"open", "submitted", "bought", "exit_strategy_pending", "exit_strategy_active", "partial", "partially_closed"}
+        active = [
+            trade for trade in trades
+            if trade.get("execution_type") == "live"
+            and (trade.get("status") in {"open", "partial", "partially_closed"} or trade.get("lifecycle_state") in active_states)
+        ]
+        issues = [
+            trade for trade in active
+            if trade.get("exit_strategy_state") in {"pending", "failed"}
+            or trade.get("exit_order_status") in {"failed", "unprotected", ""}
+        ]
+        closed = [
+            trade for trade in trades
+            if trade.get("status") in {"closed", "manually_closed", "cancelled", "failed"}
+            or trade.get("lifecycle_state") in {"closed", "manually_closed", "cancelled", "failed"}
+        ][:100]
+        intent_rows = self.get_live_order_intents(limit=300)
+        new_intents = [row for row in intent_rows if row.get("lifecycle_state") == "new" and row.get("status") == "draft"]
+        seen_intents = [
+            row for row in intent_rows
+            if row.get("lifecycle_state") in {"seen", "stale"} and row.get("status") in {"draft", "approved", "failed"}
+        ]
+        ignored_intents = [
+            row for row in intent_rows
+            if row.get("lifecycle_state") in {"ignored", "archived"} or row.get("status") == "rejected"
+        ][:100]
+        executed_intents = [row for row in intent_rows if row.get("lifecycle_state") == "executed"][:100]
+        errors = list(refresh.get("errors") or [])
+        status = self.db.fetch_one("SELECT errors FROM bot_status WHERE id = 1") or {}
+        if status.get("errors"):
+            errors.append(status["errors"])
+        return {
+            "last_refreshed_at": now_iso(),
+            "refresh": refresh,
+            "errors": errors[:8],
+            "active_trades": active,
+            "exit_issues": issues,
+            "closed_trades": closed,
+            "intents": {
+                "new": new_intents,
+                "seen": seen_intents,
+                "ignored": ignored_intents,
+                "executed": executed_intents,
+            },
+            "recent_events": self.db.fetch_all("SELECT * FROM trade_events ORDER BY timestamp DESC LIMIT 80"),
         }
 
     def _enrich_signal_quant(self, signal: dict[str, Any]) -> dict[str, Any]:
@@ -553,12 +639,36 @@ class MomentumScanner:
             validation = parse_json_dict(row.get("validation_json"))
             validation["recovery_error"] = "Intent was left in submitting state without a matching live trade record"
             self.db.execute(
-                "UPDATE live_order_intents SET status = 'failed', validation_json = ? WHERE id = ?",
+                "UPDATE live_order_intents SET status = 'failed', lifecycle_state = 'stale', validation_json = ? WHERE id = ?",
                 (json.dumps(validation, default=str), row["id"]),
             )
             self.log("ERROR", f"Recovered stuck live intent {row['id']} as failed", {"intent": row})
             recovered += 1
         return recovered
+
+    def mark_stale_intents(self, max_age_hours: int = 6) -> int:
+        rows = self.db.fetch_all(
+            """
+            SELECT id, last_seen_at, timestamp FROM live_order_intents
+            WHERE lifecycle_state IN ('new', 'seen')
+              AND status IN ('draft', 'approved')
+            """
+        )
+        updated = 0
+        for row in rows:
+            try:
+                value = row.get("last_seen_at") or row.get("timestamp")
+                seen_at = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            except Exception:
+                continue
+            age_hours = (datetime.now(timezone.utc) - seen_at).total_seconds() / 3600
+            if age_hours >= max_age_hours:
+                self.db.execute(
+                    "UPDATE live_order_intents SET lifecycle_state = 'stale', last_status_reason = ? WHERE id = ?",
+                    (f"Not seen in the last {max_age_hours} hours", row["id"]),
+                )
+                updated += 1
+        return updated
 
     def close_trade(self, trade_id: int, exit_price: float, reason: str) -> None:
         trade = self.db.fetch_one("SELECT * FROM trades WHERE id = ?", (trade_id,))
@@ -571,15 +681,53 @@ class MomentumScanner:
         self.db.execute(
             """
             UPDATE trades SET exit_time = ?, exit_price = ?, status = 'closed',
+                lifecycle_state = 'closed',
                 pnl_percent = ?, pnl_usdt = ?, exit_reason = ?
             WHERE id = ?
             """,
             (now_iso(), exit_price, round(pnl_percent, 4), round(pnl_usdt or 0, 4), reason, trade_id),
         )
         self.log("INFO", f"Paper trade {trade_id} closed", {"exit_price": exit_price, "reason": reason})
+        self.record_trade_event(trade_id, "trade_closed", f"Trade {trade_id} closed", {"exit_price": exit_price, "reason": reason})
+
+    def mark_trade_manually_closed(self, trade_id: int, reason: str = "User marked manually closed") -> dict[str, Any]:
+        trade = self.db.fetch_one("SELECT * FROM trades WHERE id = ?", (trade_id,))
+        if not trade:
+            raise ValueError("Trade not found")
+        current_price = trade.get("exit_price") or trade.get("entry_price")
+        try:
+            prices = self.market_data.fetch_last_prices([trade["symbol"]])
+            current_price = prices.get(trade["symbol"], current_price)
+        except Exception as exc:
+            self.log("WARNING", f"Could not fetch price while marking trade {trade_id} manually closed", {"error": str(exc)})
+        exit_price = float(current_price or trade["entry_price"])
+        pnl_percent = ((exit_price - float(trade["entry_price"])) / float(trade["entry_price"])) * 100
+        pnl_usdt = (exit_price - float(trade["entry_price"])) * float(trade.get("remaining_position_size") or trade.get("position_size") or 0)
+        now = now_iso()
+        self.db.execute(
+            """
+            UPDATE trades
+            SET status = 'manually_closed',
+                lifecycle_state = 'manually_closed',
+                exit_time = ?,
+                exit_price = ?,
+                pnl_percent = ?,
+                pnl_usdt = ?,
+                exit_reason = ?,
+                manually_closed_at = ?,
+                remaining_position_size = 0
+            WHERE id = ?
+            """,
+            (now, round(exit_price, 8), round(pnl_percent, 4), round(pnl_usdt, 4), reason, now, trade_id),
+        )
+        payload = {"trade_id": trade_id, "symbol": trade["symbol"], "exit_price": exit_price, "reason": reason}
+        self.record_trade_event(trade_id, "user_marked_manually_closed", f"User marked trade {trade_id} manually closed", payload, level="WARNING")
+        return payload
 
     def get_open_positions(self) -> list[dict[str, Any]]:
-        rows = self.db.fetch_all("SELECT * FROM trades WHERE status = 'open' ORDER BY entry_time DESC")
+        rows = self.db.fetch_all(
+            "SELECT * FROM trades WHERE status IN ('open', 'partial', 'partially_closed') ORDER BY entry_time DESC"
+        )
         return self._with_live_pnl(rows)
 
     def get_trade_history(self, limit: int = 100) -> list[dict[str, Any]]:
@@ -592,8 +740,8 @@ class MomentumScanner:
         account_size = float(settings.get("account_size") or 0)
         trades = self.get_trade_history(limit=100000)
 
-        open_trades = [trade for trade in trades if trade.get("status") == "open"]
-        closed_trades = [trade for trade in trades if trade.get("status") == "closed"]
+        open_trades = [trade for trade in trades if trade.get("status") in {"open", "partial", "partially_closed"}]
+        closed_trades = [trade for trade in trades if trade.get("status") in {"closed", "manually_closed"}]
         realized_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in closed_trades)
         unrealized_pnl = sum(float(trade.get("unrealized_pnl_usdt") or 0) for trade in open_trades)
         total_pnl = realized_pnl + unrealized_pnl
@@ -615,7 +763,7 @@ class MomentumScanner:
                     "exposure_usdt": 0.0,
                 },
             )
-            if trade.get("status") == "open":
+            if trade.get("status") in {"open", "partial", "partially_closed"}:
                 row["open_count"] += 1
                 row["exposure_usdt"] += float(trade.get("current_value_usdt") or 0)
                 row["pnl_usdt"] += float(trade.get("unrealized_pnl_usdt") or 0)
@@ -679,7 +827,12 @@ class MomentumScanner:
         This intentionally assumes one open live trade per symbol, which the scanner now enforces.
         """
         rows = self.db.fetch_all(
-            "SELECT * FROM trades WHERE status = 'open' AND execution_type = 'live' ORDER BY entry_time ASC"
+            """
+            SELECT * FROM trades
+            WHERE status IN ('open', 'partial', 'partially_closed')
+              AND execution_type = 'live'
+            ORDER BY entry_time ASC
+            """
         )
         refreshed: list[dict[str, Any]] = []
         errors: list[str] = []
@@ -689,6 +842,10 @@ class MomentumScanner:
             except Exception as exc:
                 message = f"{trade.get('symbol')} trade {trade.get('id')}: {exc}"
                 errors.append(message)
+                self.db.execute(
+                    "UPDATE trades SET last_reconciled_at = ?, last_reconcile_error = ? WHERE id = ?",
+                    (now_iso(), str(exc), trade.get("id")),
+                )
                 self.log("ERROR", "Live portfolio refresh failed", {"trade": trade, "error": str(exc)})
         return {"refreshed": refreshed, "errors": errors}
 
@@ -721,12 +878,16 @@ class MomentumScanner:
                 """
                 UPDATE trades
                 SET status = 'closed',
+                    lifecycle_state = 'closed',
                     exit_time = ?,
                     exit_price = ?,
                     pnl_percent = ?,
                     pnl_usdt = ?,
                     exit_reason = ?,
-                    remaining_position_size = 0
+                    remaining_position_size = 0,
+                    closed_detected_at = ?,
+                    last_reconciled_at = ?,
+                    last_reconcile_error = ''
                 WHERE id = ?
                 """,
                 (
@@ -735,18 +896,25 @@ class MomentumScanner:
                     round(realized_pct, 4),
                     round(realized_pnl, 4),
                     "Closed from Binance sell fills on refresh",
+                    now_iso(),
+                    now_iso(),
                     trade_id,
                 ),
             )
+            self.record_trade_event(trade_id, "trade_closed", f"Trade {trade_id} closed from Binance fills", {"fills": sell_fills, "realized_pnl": realized_pnl})
             status = "closed"
         elif sold_qty > 0:
             self.db.execute(
                 """
                 UPDATE trades
-                SET remaining_position_size = ?,
+                SET status = 'partially_closed',
+                    lifecycle_state = 'partially_closed',
+                    remaining_position_size = ?,
                     pnl_percent = ?,
                     pnl_usdt = ?,
-                    exit_reason = ?
+                    exit_reason = ?,
+                    last_reconciled_at = ?,
+                    last_reconcile_error = ''
                 WHERE id = ?
                 """,
                 (
@@ -754,16 +922,61 @@ class MomentumScanner:
                     round(realized_pct, 4),
                     round(realized_pnl, 4),
                     f"Partially sold on Binance: {sold_fraction:.1%} filled",
+                    now_iso(),
                     trade_id,
                 ),
             )
+            self.record_trade_event(trade_id, "trade_partially_closed", f"Trade {trade_id} partially sold on Binance", {"sold_qty": sold_qty, "remaining_qty": remaining_qty})
             status = "partial"
         else:
-            self.db.execute(
-                "UPDATE trades SET remaining_position_size = COALESCE(remaining_position_size, position_size) WHERE id = ?",
-                (trade_id,),
-            )
-            status = "open"
+            balance_total = self._base_asset_total(symbol)
+            remaining_reference = float(trade.get("remaining_position_size") or position_size)
+            if balance_total is not None and balance_total <= remaining_reference * 0.02 and not exit_sync.get("protected"):
+                self.db.execute(
+                    """
+                    UPDATE trades
+                    SET status = 'manually_closed',
+                        lifecycle_state = 'manually_closed',
+                        exit_time = ?,
+                        exit_reason = ?,
+                        manually_closed_at = ?,
+                        closed_detected_at = ?,
+                        remaining_position_size = 0,
+                        last_reconciled_at = ?,
+                        last_reconcile_error = ''
+                    WHERE id = ?
+                    """,
+                    (
+                        now_iso(),
+                        "Detected no remaining Binance balance/open exit orders during refresh",
+                        now_iso(),
+                        now_iso(),
+                        now_iso(),
+                        trade_id,
+                    ),
+                )
+                self.record_trade_event(
+                    trade_id,
+                    "manual_close_detected",
+                    f"Manual close detected for trade {trade_id}",
+                    {"base_asset_total": balance_total, "remaining_reference": remaining_reference, "exit_sync": exit_sync},
+                    level="WARNING",
+                )
+                status = "manually_closed"
+            else:
+                lifecycle_state = "exit_strategy_active" if exit_sync.get("protected") else "exit_strategy_pending"
+                self.db.execute(
+                    """
+                    UPDATE trades
+                    SET remaining_position_size = COALESCE(remaining_position_size, position_size),
+                        lifecycle_state = ?,
+                        last_reconciled_at = ?,
+                        last_reconcile_error = ''
+                    WHERE id = ?
+                    """,
+                    (lifecycle_state, now_iso(), trade_id),
+                )
+                status = "open"
 
         return {
             "trade_id": trade_id,
@@ -775,6 +988,20 @@ class MomentumScanner:
             "realized_pnl_usdt": round(realized_pnl, 4),
             "exit_sync": exit_sync.get("status"),
         }
+
+    def _base_asset_total(self, symbol: str) -> float | None:
+        try:
+            base = symbol.split("/")[0]
+            balance = self.market_data.private_exchange().fetch_balance()
+            total = (balance.get("total") or {}).get(base)
+            if total is None:
+                free = (balance.get("free") or {}).get(base) or 0
+                used = (balance.get("used") or {}).get(base) or 0
+                total = float(free) + float(used)
+            return float(total or 0)
+        except Exception as exc:
+            self.log("WARNING", f"Could not fetch base balance for {symbol}", {"error": str(exc)})
+            return None
 
     def _timestamp_ms(self, value: str) -> int | None:
         try:
@@ -809,8 +1036,8 @@ class MomentumScanner:
         settings = self.db.fetch_one("SELECT * FROM settings WHERE id = 1") or {}
         signals = self._latest_signals(limit=200)
 
-        open_trades = [trade for trade in trades if trade.get("status") == "open"]
-        closed_trades = [trade for trade in trades if trade.get("status") == "closed"]
+        open_trades = [trade for trade in trades if trade.get("status") in {"open", "partial", "partially_closed"}]
+        closed_trades = [trade for trade in trades if trade.get("status") in {"closed", "manually_closed"}]
         realized_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in closed_trades)
         unrealized_pnl = sum(float(trade.get("unrealized_pnl_usdt") or 0) for trade in open_trades)
         total_pnl = realized_pnl + unrealized_pnl
@@ -907,7 +1134,7 @@ class MomentumScanner:
         return [{"label": label, "value": value} for label, value in buckets.items()]
 
     def _with_live_pnl(self, rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        open_rows = [row for row in rows if row.get("status") == "open"]
+        open_rows = [row for row in rows if row.get("status") in {"open", "partial", "partially_closed"}]
         prices: dict[str, float] = {}
         if open_rows:
             try:
@@ -925,7 +1152,7 @@ class MomentumScanner:
             item["time_in_trade"] = ""
             item["status_notes"] = item.get("exit_reason") or ""
 
-            if item.get("status") == "open":
+            if item.get("status") in {"open", "partial", "partially_closed"}:
                 current_price = prices.get(item["symbol"], item["entry_price"])
                 entry_price = float(item["entry_price"])
                 original_size = float(item.get("position_size") or 0)
@@ -991,4 +1218,25 @@ class MomentumScanner:
         self.db.execute(
             "INSERT INTO event_log (timestamp, level, message, context) VALUES (?, ?, ?, ?)",
             (now_iso(), level, message, json.dumps(context or {}, default=str)),
+        )
+
+    def record_trade_event(
+        self,
+        trade_id: int | None,
+        event_type: str,
+        message: str,
+        context: dict[str, Any] | None = None,
+        level: str = "INFO",
+        intent_id: int | None = None,
+        symbol: str | None = None,
+    ) -> None:
+        if trade_id and not symbol:
+            trade = self.db.fetch_one("SELECT symbol FROM trades WHERE id = ?", (trade_id,))
+            symbol = trade.get("symbol") if trade else None
+        self.db.execute(
+            """
+            INSERT INTO trade_events (timestamp, trade_id, intent_id, symbol, event_type, level, message, context)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (now_iso(), trade_id, intent_id, symbol, event_type, level, message, json.dumps(context or {}, default=str)),
         )

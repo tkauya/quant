@@ -5,85 +5,99 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Binance Momentum Bot</title>
   <style>
-    :root { color-scheme: light; --bg:#f4f6f8; --panel:#fff; --text:#17202a; --muted:#667085; --line:#d8dee8; --good:#0f7b52; --warn:#9a6700; --bad:#b42318; --blue:#1b5fd6; --ink:#111827; --soft:#eef2f7; }
-    * { box-sizing: border-box; }
+    :root {
+      color-scheme: light;
+      --bg:#f5f7fa; --panel:#fff; --text:#17202a; --muted:#667085; --line:#d8dee8;
+      --good:#087443; --warn:#9a6700; --bad:#b42318; --blue:#1b5fd6; --ink:#111827; --soft:#eef2f7;
+    }
+    * { box-sizing:border-box; }
     html, body { max-width:100%; overflow-x:hidden; }
     body { margin:0; font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Arial,sans-serif; color:var(--text); background:var(--bg); }
-    header { padding:18px 22px; background:var(--ink); color:white; display:flex; justify-content:space-between; gap:16px; align-items:center; flex-wrap:wrap; border-bottom:3px solid #2f6fed; }
-    h1 { font-size:20px; margin:0; font-weight:650; }
-    h2 { font-size:15px; margin:0 0 10px; }
-    main { padding:18px; display:grid; gap:16px; width:100%; max-width:1800px; margin:0 auto; min-width:0; }
-    main > section, .grid > *, .kpi-grid > *, .chart-grid > *, .forms > * { min-width:0; }
-    .grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:12px; }
-    .kpi-grid { display:grid; grid-template-columns:repeat(6,minmax(0,1fr)); gap:12px; }
-    .chart-grid { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:12px; }
-    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; box-shadow:0 1px 2px rgba(16,24,40,.04); min-width:0; max-width:100%; }
-    .performance-section { display:grid; gap:12px; }
-    .chart-box { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:14px; box-shadow:0 1px 2px rgba(16,24,40,.04); min-width:0; max-width:100%; }
+    header { background:var(--ink); color:white; padding:16px; display:grid; gap:12px; border-bottom:3px solid #2f6fed; }
+    h1 { margin:0; font-size:20px; }
+    h2 { margin:0; font-size:16px; }
+    h3 { margin:0; font-size:15px; }
+    main { width:min(1180px,100%); margin:0 auto; padding:12px; display:grid; gap:14px; }
+    button, select, input { border:1px solid var(--line); border-radius:6px; background:white; color:var(--text); padding:8px 10px; font:inherit; min-height:36px; }
+    button { cursor:pointer; font-weight:650; }
+    button.primary { background:var(--blue); border-color:var(--blue); color:white; }
+    button.danger { color:var(--bad); }
+    button:disabled { opacity:.55; cursor:not-allowed; }
+    a button { width:100%; }
+    .muted { color:var(--muted); }
+    header .muted { color:#cbd5e1; }
+    .small { font-size:12px; }
+    .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+    .panel { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:12px; box-shadow:0 1px 2px rgba(16,24,40,.04); min-width:0; }
+    .topbar { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; flex-wrap:wrap; }
+    .notice { border:1px solid var(--line); border-radius:8px; background:white; padding:9px 11px; min-height:39px; color:var(--muted); font-weight:600; }
+    .notice.error { color:var(--bad); border-color:#f0b8b2; background:#fff7f6; }
+    .kpis { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:10px; }
     .metric { display:grid; gap:3px; }
     .label { color:var(--muted); font-size:12px; }
-    .value { font-weight:700; font-size:16px; }
-    .controls { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-    button, select, input { border:1px solid var(--line); border-radius:6px; background:white; color:var(--text); padding:8px 10px; font:inherit; min-height:36px; }
-    button { cursor:pointer; font-weight:600; }
-    button.primary { background:var(--blue); color:white; border-color:var(--blue); }
-    button:hover { filter:brightness(.97); }
-    button.danger { color:var(--bad); }
-    table { width:100%; border-collapse:collapse; min-width:1100px; }
-    th, td { text-align:left; border-bottom:1px solid var(--line); padding:8px; vertical-align:top; white-space:nowrap; }
-    th { color:var(--muted); font-size:12px; background:#fbfcfe; position:sticky; top:0; }
-    .scroll { overflow:auto; max-width:100%; max-height:520px; border:1px solid var(--line); border-radius:8px; }
-    .tier1 { color:var(--good); font-weight:700; }
-    .watch { color:var(--blue); font-weight:700; }
-    .early { color:var(--warn); font-weight:700; }
-    .bad { color:var(--bad); }
-    .profit { color:var(--good); font-weight:700; }
-    .loss { color:var(--bad); font-weight:700; }
-    .stale { color:var(--warn); font-weight:700; }
-    .muted { color:var(--muted); }
-    .notice { min-height:20px; color:var(--muted); font-weight:600; }
-    .forms { display:grid; grid-template-columns:repeat(6,minmax(130px,1fr)); gap:10px; align-items:end; }
-    .status-pill { display:inline-flex; align-items:center; gap:6px; padding:5px 9px; border-radius:999px; background:#eaf1ff; color:#174ea6; font-weight:700; width:max-content; }
-    .status-pill.on { background:#e8f7ef; color:var(--good); }
-    .status-pill.off { background:#f9e9e7; color:var(--bad); }
-    .live-grid { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
-    .check-list { display:grid; gap:8px; }
-    .check-row { display:flex; justify-content:space-between; gap:12px; align-items:flex-start; padding:8px 0; border-bottom:1px solid var(--soft); }
-    .check-row:last-child { border-bottom:0; }
-    .check-name { font-weight:700; }
-    .check-detail { color:var(--muted); font-size:12px; margin-top:2px; }
-    .section-title { display:flex; justify-content:space-between; gap:12px; align-items:center; margin-bottom:10px; }
-    .section-title h2 { margin:0; }
-    .small-note { color:var(--muted); font-size:12px; }
-    canvas { width:100%; max-width:100%; height:210px; display:block; background:linear-gradient(180deg,#fff,#fbfcfe); border:1px solid var(--soft); border-radius:7px; }
-    .wide { grid-column:span 2; }
-    @media (max-width: 1200px) { .kpi-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .wide { grid-column:span 2; } }
-    @media (max-width: 900px) { .grid, .forms, .kpi-grid, .live-grid { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } header { align-items:flex-start; } }
-    @media (max-width: 760px) { .chart-grid { grid-template-columns:minmax(0,1fr); } .wide { grid-column:span 1; } }
-    @media (max-width: 560px) { .grid, .forms, .kpi-grid, .live-grid { grid-template-columns:1fr; } main { padding:10px; } }
+    .value { font-size:16px; font-weight:750; overflow-wrap:anywhere; }
+    .forms { display:grid; grid-template-columns:1fr; gap:10px; }
+    label { display:grid; gap:4px; }
+    .section { display:grid; gap:10px; }
+    .section-head { display:flex; justify-content:space-between; gap:10px; align-items:center; }
+    .cards { display:grid; gap:10px; }
+    .card { border:1px solid var(--line); border-radius:8px; background:white; padding:12px; display:grid; gap:10px; min-width:0; }
+    .card-head { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .symbol { font-size:18px; font-weight:800; letter-spacing:0; }
+    .pill { display:inline-flex; align-items:center; width:max-content; max-width:100%; border-radius:999px; padding:4px 8px; font-weight:750; font-size:12px; background:#eaf1ff; color:#174ea6; overflow-wrap:anywhere; }
+    .pill.good { color:var(--good); background:#e8f7ef; }
+    .pill.warn { color:var(--warn); background:#fff6df; }
+    .pill.bad { color:var(--bad); background:#fcebea; }
+    .facts { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:8px; }
+    .fact { border-top:1px solid var(--soft); padding-top:7px; min-width:0; }
+    .fact strong { display:block; font-size:13px; overflow-wrap:anywhere; }
+    .actions { display:flex; gap:8px; flex-wrap:wrap; }
+    details { border-top:1px solid var(--soft); padding-top:8px; }
+    summary { cursor:pointer; font-weight:750; }
+    .detail-grid { display:grid; grid-template-columns:1fr; gap:6px; margin-top:8px; }
+    .log-line { padding:7px 0; border-bottom:1px solid var(--soft); }
+    .log-line:last-child { border-bottom:0; }
+    .profit { color:var(--good); font-weight:750; }
+    .loss { color:var(--bad); font-weight:750; }
+    .empty { color:var(--muted); padding:10px 0; }
+    .collapsed { display:none; }
+    @media (min-width: 720px) {
+      header { grid-template-columns:1fr auto; align-items:center; padding:18px 22px; }
+      main { padding:18px; }
+      .kpis { grid-template-columns:repeat(4,minmax(0,1fr)); }
+      .forms { grid-template-columns:repeat(6,minmax(120px,1fr)); align-items:end; }
+      .cards { grid-template-columns:repeat(2,minmax(0,1fr)); }
+      .facts { grid-template-columns:repeat(4,minmax(0,1fr)); }
+      .detail-grid { grid-template-columns:repeat(2,minmax(0,1fr)); }
+    }
+    @media (min-width: 1080px) {
+      .cards.three { grid-template-columns:repeat(3,minmax(0,1fr)); }
+    }
   </style>
 </head>
 <body>
   <header>
     <div>
       <h1>Binance Momentum Bot</h1>
-      <div class="muted">Top 40 USDT spot momentum scanner · alert-only by default</div>
+      <div class="muted">Live spot dashboard · lifecycle-aware refresh</div>
     </div>
     <div class="controls">
-      <button class="primary" onclick="startBot()">Start Bot</button>
-      <button onclick="stopBot()">Stop Bot</button>
-      <button onclick="scanNow()">Refresh Scan</button>
+      <button class="primary" onclick="startBot()">Start</button>
+      <button onclick="stopBot()">Stop</button>
+      <button onclick="scanNow()">Scan</button>
+      <button onclick="refreshPortfolioState()">Sync Binance</button>
       <a href="/api/trades/export.csv"><button>Export CSV</button></a>
     </div>
   </header>
 
   <main>
-    <section class="grid" id="statusGrid"></section>
-    <div class="notice" id="notice"></div>
+    <div id="notice" class="notice">Loading dashboard...</div>
+
+    <section class="kpis" id="statusGrid"></section>
 
     <section class="panel">
-      <h2>Controls</h2>
-      <div class="forms">
+      <div class="section-head"><h2>Controls</h2><span class="small muted" id="lastRefreshed">Last refreshed: never</span></div>
+      <div class="forms" style="margin-top:10px">
         <label><span class="label">Mode</span><select id="mode"><option>alert-only</option><option>paper-trading</option><option>live-trading</option></select></label>
         <label><span class="label">Account size</span><input id="accountSize" type="number" min="0" step="100"></label>
         <label><span class="label">Risk %</span><input id="riskPct" type="number" min="0.01" max="10" step="0.1"></label>
@@ -92,598 +106,308 @@
         <label><span class="label">Alert method</span><select id="alertMethod"><option>none</option><option>email</option><option>telegram</option></select></label>
       </div>
       <div class="controls" style="margin-top:10px">
-        <button onclick="saveSettings()">Save Settings</button>
+        <button onclick="saveSettings()">Save</button>
         <button class="danger" onclick="changeMode()">Switch Mode</button>
-          <span class="muted">Live mode requires ENABLE_BINANCE_LIVE_TRADING=1, LIVE_TRADING_UNLOCKED=true, and the exact confirmation phrase.</span>
+        <button onclick="refreshLiveReadiness()">Live Readiness</button>
+        <button class="danger" onclick="testBinanceAccount()">Test Account</button>
+        <button class="danger" onclick="testSpotTradePermission()">Test Trade Permission</button>
       </div>
+      <div id="liveChecks" class="detail-grid" style="margin-top:10px"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>A. Active Trades</h2><span class="small muted" id="activeCount"></span></div>
+      <div class="cards" id="activeTrades"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>B. Exit Strategy Issues</h2><span class="small muted">Needs manual attention</span></div>
+      <div class="cards" id="exitIssues"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>C. New Trade Intents</h2><span class="small muted">Fresh from scans</span></div>
+      <div class="cards three" id="newIntents"></div>
+    </section>
+
+    <section class="section">
+      <div class="section-head"><h2>D. Previously Seen</h2><span class="small muted">Repeated or stale</span></div>
+      <div class="cards three" id="seenIntents"></div>
     </section>
 
     <section class="panel">
-      <div class="section-title">
-        <h2>Live Readiness</h2>
-        <span class="small-note">Readiness only. This build will not place live orders.</span>
-      </div>
-      <div class="live-grid">
-        <div>
-          <div class="check-list" id="liveChecks"></div>
-        </div>
-        <div class="metric">
-          <span class="label">Configured key</span>
-          <span class="value" id="apiKeyHint">Not configured</span>
-          <span class="label">Account check</span>
-          <span class="value" id="accountCheck">Not run</span>
-          <span class="label">Spot trade permission</span>
-          <span class="value" id="tradePermissionCheck">Not run</span>
-          <div class="controls" style="margin-top:10px">
-            <button onclick="refreshLiveReadiness()">Refresh Readiness</button>
-            <button class="danger" onclick="testBinanceAccount()">Test Binance Account</button>
-            <button class="danger" onclick="testSpotTradePermission()">Test Spot Trade Permission</button>
-          </div>
-          <span class="small-note">Trade permission test uses Binance /api/v3/order/test with a small market BUY payload. It validates TRADE permission but does not place an order.</span>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" id="performanceSection">
-      <div class="section-title">
-        <h2>Bot Performance</h2>
-        <span class="small-note">Includes realised PnL plus live mark-to-market paper PnL</span>
-      </div>
-      <div class="kpi-grid" id="performanceGrid"></div>
-      <div class="chart-grid" style="margin-top:12px">
-        <div class="chart-box wide">
-          <div class="section-title"><h2>PnL Curve</h2><span class="small-note">USDT</span></div>
-          <canvas id="equityChart" width="700" height="260"></canvas>
-        </div>
-        <div class="chart-box">
-          <div class="section-title"><h2>Open PnL</h2><span class="small-note">By symbol</span></div>
-          <canvas id="openPnlChart" width="420" height="260"></canvas>
-        </div>
-        <div class="chart-box">
-          <div class="section-title"><h2>Signal Quality</h2><span class="small-note">Latest scan</span></div>
-          <canvas id="scoreChart" width="420" height="260"></canvas>
-        </div>
-        <div class="chart-box">
-          <div class="section-title"><h2>Signal Tiers</h2><span class="small-note">Latest scan</span></div>
-          <canvas id="tierChart" width="420" height="260"></canvas>
-        </div>
-        <div class="chart-box">
-          <div class="section-title"><h2>Trade Status</h2><span class="small-note">All non-live history</span></div>
-          <canvas id="statusChart" width="420" height="260"></canvas>
-        </div>
-      </div>
-    </section>
-
-    <section class="panel" id="portfolioSection">
-      <div class="section-title">
-        <h2>Portfolio Performance</h2>
-        <span class="small-note">Refresh syncs Binance fills, exits, open exposure and PnL</span>
-        <button onclick="refreshPortfolioState()">Sync Portfolio</button>
-      </div>
-      <div class="kpi-grid" id="portfolioGrid"></div>
-      <div class="chart-grid" style="margin-top:12px">
-        <div class="chart-box">
-          <div class="section-title"><h2>PnL By Symbol</h2><span class="small-note">USDT</span></div>
-          <canvas id="portfolioPnlChart" width="420" height="260"></canvas>
-        </div>
-        <div class="chart-box">
-          <div class="section-title"><h2>Open Exposure</h2><span class="small-note">USDT</span></div>
-          <canvas id="portfolioExposureChart" width="420" height="260"></canvas>
-        </div>
-      </div>
-      <div class="section-title" style="margin-top:12px">
-        <h2>Per Trade PnL</h2>
-        <span class="small-note">Execution type shows paper vs live</span>
-      </div>
-      <div class="scroll"><table id="portfolioTradesTable"></table></div>
+      <details>
+        <summary>E. Ignored / Archived Intents</summary>
+        <div class="cards three" id="ignoredIntents" style="margin-top:10px"></div>
+      </details>
     </section>
 
     <section class="panel">
-      <h2>Quant Research Table</h2>
-      <div class="scroll"><table id="signalsTable"></table></div>
-    </section>
-
-    <section class="panel" id="intentDetailSection" style="display:none">
-      <div class="section-title">
-        <h2>Intent Detail</h2>
-        <button onclick="closeIntentDetail()">Close</button>
-      </div>
-      <div id="intentDetail"></div>
-    </section>
-
-    <section class="panel" id="positionsSection">
-      <h2 id="positionsTitle">Open Positions / Active Alerts</h2>
-      <div class="scroll"><table id="positionsTable"></table></div>
+      <details>
+        <summary>F. Closed Trades / History</summary>
+        <div class="cards" id="closedTrades" style="margin-top:10px"></div>
+      </details>
     </section>
 
     <section class="panel">
-      <div class="section-title">
-        <h2>Live Order Intents</h2>
-        <span class="small-note">Drafts created from signals; approve/submit flow is separate from paper trades</span>
-      </div>
-      <div class="scroll"><table id="liveIntentsTable"></table></div>
-    </section>
-
-    <section class="panel" id="tradeHistorySection">
-      <div class="section-title">
-        <h2 id="tradeHistoryTitle">Trade / Paper-Trade History</h2>
-        <span class="small-note" id="tradeHistoryNote">Historical simulated trades remain visible even when live mode is selected</span>
-      </div>
-      <div class="scroll"><table id="tradesTable"></table></div>
+      <details>
+        <summary>Recent Trade Events</summary>
+        <div id="eventLog" style="margin-top:10px"></div>
+      </details>
     </section>
   </main>
 
   <script>
-    const fmt = value => value === null || value === undefined ? "" : value;
-    const num = value => value === null || value === undefined ? "" : Number(value).toLocaleString(undefined, {maximumFractionDigits: 6});
-    const money = value => value === null || value === undefined ? "" : Number(value).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    const tierClass = tier => tier.includes("Tier 1") ? "tier1" : tier.includes("Strong") ? "watch" : tier.includes("Early") ? "early" : "bad";
+    const fmt = v => v === null || v === undefined || v === "" ? "n/a" : v;
+    const num = v => v === null || v === undefined || v === "" ? "n/a" : Number(v).toLocaleString(undefined, {maximumFractionDigits: 8});
+    const money = v => v === null || v === undefined || v === "" ? "n/a" : Number(v).toLocaleString(undefined, {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const pct = v => v === null || v === undefined || v === "" ? "n/a" : `${num(v)}%`;
+    const time = v => v ? new Date(v).toLocaleString() : "n/a";
+    const pnlClass = v => Number(v) > 0 ? "profit" : Number(v) < 0 ? "loss" : "";
+    const stateClass = v => {
+      const s = String(v || "").toLowerCase();
+      if (s.includes("active") || s === "open" || s === "bought" || s === "executed") return "good";
+      if (s.includes("pending") || s.includes("stale") || s.includes("partial")) return "warn";
+      if (s.includes("fail") || s.includes("manual") || s.includes("unprotected")) return "bad";
+      return "";
+    };
 
     async function api(path, opts={}) {
-      const res = await fetch(path, {headers: {"Content-Type": "application/json"}, ...opts});
+      const res = await fetch(path, {headers: {"Content-Type":"application/json"}, ...opts});
       if (!res.ok) {
         const text = await res.text();
-        try {
-          const parsed = JSON.parse(text);
-          throw new Error(parsed.detail || text);
-        } catch (_) {
-          throw new Error(text);
-        }
+        try { throw new Error(JSON.parse(text).detail || text); }
+        catch (_) { throw new Error(text); }
       }
       return res.json();
     }
 
-    function renderStatus(status) {
-      const b = status.bot_status, s = status.settings, gates = status.live_gates || {}, scan = status.scan_status || {};
-      document.getElementById("mode").value = b.mode;
-      document.getElementById("accountSize").value = s.account_size;
-      document.getElementById("riskPct").value = s.risk_per_trade_percent;
-      document.getElementById("scanInterval").value = s.scan_interval_minutes;
-      document.getElementById("alerts").value = String(s.alerts_enabled);
-      document.getElementById("alertMethod").value = s.alert_method;
-      const liveMode = b.mode === "live-trading";
-      document.getElementById("performanceSection").style.display = liveMode ? "none" : "";
-      document.getElementById("positionsTitle").textContent = liveMode ? "Live Positions / Active Alerts" : "Open Positions / Active Alerts";
-      document.getElementById("positionsSection").style.display = liveMode ? "none" : "";
-      document.getElementById("tradeHistorySection").style.display = liveMode ? "none" : "";
-      const items = [
-        ["Bot", `<span class="status-pill ${b.is_running ? "on" : "off"}">${b.is_running ? "Running" : "Stopped"}</span>`],
-        ["Last scan", b.last_scan_time || "Never"],
-        ["Scan state", `<span class="status-pill ${scan.is_scanning ? "on" : "off"}">${scan.is_scanning ? "Scanning" : "Idle"}</span>`],
-        ["Scan started", scan.last_started_at || "Never"],
-        ["Scan finished", scan.last_finished_at || "Never"],
-        ["Coins scanned", b.coins_scanned],
-        ["Market regime", b.market_regime],
-        ["BTC trend", b.btc_trend],
-        ["ETH trend", b.eth_trend],
-        ["Mode", b.mode],
-        ["DB live flag", `<span class="status-pill ${s.live_trading_enabled ? "on" : "off"}">${s.live_trading_enabled ? "1 / On" : "0 / Off"}</span>`],
-        ["Env live gate", `<span class="status-pill ${gates.env_enabled ? "on" : "off"}">${gates.env_enabled ? "1 / On" : "0 / Off"}</span>`],
-        ["Approved", status.lifecycle_counts ? (status.lifecycle_counts.approved || 0) : 0],
-        ["Submitting", status.lifecycle_counts ? (status.lifecycle_counts.submitting || 0) : 0],
-        ["Warnings", scan.last_error || b.errors || "None"]
-      ];
-      document.getElementById("statusGrid").innerHTML = items.map(([k,v]) => `<div class="panel metric"><span class="label">${k}</span><span class="value">${v}</span></div>`).join("");
+    function setNotice(message, isError=false) {
+      const node = document.getElementById("notice");
+      node.textContent = message || "";
+      node.className = `notice${isError ? " error" : ""}`;
     }
 
-    function renderLiveReadiness(live) {
-      const checks = live.checks || [];
-      document.getElementById("liveChecks").innerHTML = checks.map(check => `
-        <div class="check-row">
-          <div>
-            <div class="check-name">${check.name}</div>
-            <div class="check-detail">${check.detail}</div>
-          </div>
-          <span class="status-pill ${check.ok ? "on" : "off"}">${check.ok ? "OK" : "Locked"}</span>
-        </div>
-      `).join("");
-      const credentials = live.credentials || {};
-      document.getElementById("apiKeyHint").textContent = credentials.api_key_hint || "Not configured";
-      const account = live.account_check || {};
-      document.getElementById("accountCheck").textContent = account.detail || "Not run";
-      const tradeTest = live.trade_permission_test || {};
-      document.getElementById("tradePermissionCheck").textContent = tradeTest.detail || "Not run";
-    }
-
-    function renderPerformance(performance) {
-      const s = performance.summary;
-      const items = [
-        ["Total PnL", `${money(s.total_pnl_usdt)} USDT`, s.total_pnl_usdt],
-        ["Unrealised", `${money(s.unrealized_pnl_usdt)} USDT`, s.unrealized_pnl_usdt],
-        ["Realised", `${money(s.realized_pnl_usdt)} USDT`, s.realized_pnl_usdt],
-        ["Return", `${num(s.total_return_percent)}%`, s.total_return_percent],
-        ["Open positions", s.open_positions, null],
-        ["Win rate", `${num(s.win_rate_percent)}%`, s.win_rate_percent],
-        ["Avg score", s.avg_signal_score, null],
-        ["Regime", s.market_regime, null],
-      ];
-      document.getElementById("performanceGrid").innerHTML = items.map(([k,v,trend]) => {
-        const cls = trend === null ? "" : pnlClass(trend);
-        return `<div class="panel metric"><span class="label">${k}</span><span class="value ${cls}">${v}</span></div>`;
-      }).join("");
-      drawLineChart("equityChart", performance.charts.equity_curve, "#1b5fd6");
-      drawBarChart("openPnlChart", performance.charts.open_pnl_by_symbol, true);
-      drawBarChart("scoreChart", performance.charts.score_buckets, false);
-      drawBarChart("tierChart", performance.charts.signal_tiers, false);
-      drawBarChart("statusChart", performance.charts.trade_status, false);
-    }
-
-    function renderPortfolio(portfolio) {
-      const s = portfolio.summary || {};
-      const items = [
-        ["Total PnL", `${money(s.total_pnl_usdt)} USDT`, s.total_pnl_usdt],
-        ["Unrealised", `${money(s.unrealized_pnl_usdt)} USDT`, s.unrealized_pnl_usdt],
-        ["Realised", `${money(s.realized_pnl_usdt)} USDT`, s.realized_pnl_usdt],
-        ["Return", `${num(s.total_return_percent)}%`, s.total_return_percent],
-        ["Open exposure", `${money(s.open_exposure_usdt)} USDT`, null],
-        ["Open trades", s.open_trades, null],
-        ["Live open", s.live_open, null],
-        ["Paper open", s.paper_open, null],
-        ["Closed", s.closed_trades, null],
-        ["Win rate", `${num(s.win_rate_percent)}%`, null],
-      ];
-      document.getElementById("portfolioGrid").innerHTML = items.map(([k,v,trend]) => {
-        const cls = trend === null ? "" : pnlClass(trend);
-        return `<div class="panel metric"><span class="label">${k}</span><span class="value ${cls}">${v}</span></div>`;
-      }).join("");
-      drawBarChart("portfolioPnlChart", (portfolio.charts || {}).pnl_by_symbol || [], true);
-      drawBarChart("portfolioExposureChart", (portfolio.charts || {}).exposure_by_symbol || [], false);
-      renderPortfolioTrades(portfolio.trades || []);
-    }
-
-    function renderPortfolioTrades(rows) {
-      const head = ["ID","Type","Symbol","Status","Exit order","Entry time","Entry","Current/Exit","Qty","Entry value","Current value","PnL %","PnL USDT","Stop","TP1","TP2","Reason",""];
-      const body = rows.map(r => {
-        const currentOrExit = r.status === "open" ? r.current_price : r.exit_price;
-        return `<tr>
-          <td>${r.id}</td><td>${fmt(r.execution_type || "paper")}</td><td>${r.symbol}</td><td>${r.status}</td><td>${fmt(r.exit_order_status || "")}</td><td>${fmt(r.entry_time)}</td>
-          <td>${num(r.entry_price)}</td><td>${num(currentOrExit)}</td><td>${num(r.remaining_position_size || r.position_size)}</td>
-          <td>${money(r.entry_value_usdt)}</td><td>${money(r.current_value_usdt)}</td>
-          <td class="${pnlClass(r.pnl_percent)}">${num(r.pnl_percent)}</td><td class="${pnlClass(r.pnl_usdt)}">${money(r.pnl_usdt)}</td>
-          <td>${num(r.stop_loss)}</td><td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td>
-          <td>${fmt(r.entry_reason || r.exit_reason)}</td>
-          <td>${r.execution_type === "live" && r.status === "open" ? `<button onclick="syncExits(${r.id})">Sync</button> ${r.exit_order_status !== "placed" && r.exit_order_status !== "stop_only_placed" && r.exit_order_status !== "synced_protected" ? `<button onclick="retryExits(${r.id})">Retry stop</button>` : ""}` : ""}</td>
-        </tr>`;
-      }).join("");
-      document.getElementById("portfolioTradesTable").innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
-    }
-
-    function chartContext(id) {
-      const canvas = document.getElementById(id);
-      const rect = canvas.getBoundingClientRect();
-      const dpr = window.devicePixelRatio || 1;
-      const width = Math.max(320, Math.floor(rect.width || canvas.clientWidth || 420));
-      const height = canvas.dataset.rows ? Math.max(220, Number(canvas.dataset.rows) * 30 + 54) : 220;
-      canvas.width = Math.floor(width * dpr);
-      canvas.height = Math.floor(height * dpr);
-      canvas.style.height = `${height}px`;
-      const ctx = canvas.getContext("2d");
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.clearRect(0, 0, width, height);
-      ctx.font = "11px -apple-system,BlinkMacSystemFont,Segoe UI,Arial";
-      return {canvas: {width, height}, ctx};
-    }
-
-    function drawEmpty(ctx, canvas, text) {
-      ctx.fillStyle = "#667085";
-      ctx.textAlign = "center";
-      ctx.fillText(text, canvas.width / 2, canvas.height / 2);
-      ctx.textAlign = "left";
-    }
-
-    function drawBarChart(id, rows, allowNegative) {
-      const data = (rows || []).filter(r => Number.isFinite(Number(r.value)));
-      document.getElementById(id).dataset.rows = Math.min(data.length || 1, 10);
-      const {canvas, ctx} = chartContext(id);
-      if (!data.length) return drawEmpty(ctx, canvas, "No data yet");
-      if (data.every(row => Number(row.value) === 0)) return drawEmpty(ctx, canvas, "No data yet");
-      const pad = 34, labelPad = Math.min(150, Math.max(104, canvas.width * 0.25));
-      const values = data.map(r => Number(r.value));
-      const min = allowNegative ? Math.min(0, ...values) : 0;
-      const max = Math.max(1, ...values.map(v => Math.abs(v)), ...values);
-      const zeroX = allowNegative ? labelPad + ((0 - min) / (max - min || 1)) * (canvas.width - labelPad - pad) : labelPad;
-      const barH = Math.max(12, Math.min(24, (canvas.height - pad * 2) / data.length - 6));
-      ctx.strokeStyle = "#d8dee8"; ctx.beginPath(); ctx.moveTo(zeroX, pad / 2); ctx.lineTo(zeroX, canvas.height - pad / 2); ctx.stroke();
-      const visible = data.slice(0, 10);
-      visible.forEach((row, i) => {
-        const value = Number(row.value);
-        const y = pad + i * (barH + 8);
-        const width = allowNegative
-          ? ((Math.abs(value)) / (max - min || 1)) * (canvas.width - labelPad - pad)
-          : (value / max) * (canvas.width - labelPad - pad);
-        const x = value < 0 && allowNegative ? zeroX - width : zeroX;
-        ctx.fillStyle = value < 0 ? "#b42318" : "#0f7b52";
-        if (!allowNegative) ctx.fillStyle = "#1b5fd6";
-        ctx.fillRect(x, y, Math.max(2, width), barH);
-        ctx.fillStyle = "#17202a"; ctx.textAlign = "right"; ctx.fillText(String(row.label).slice(0, 12), labelPad - 8, y + barH - 3);
-        ctx.textAlign = value < 0 && allowNegative ? "right" : "left";
-        ctx.fillText(num(value), value < 0 && allowNegative ? x - 5 : x + width + 5, y + barH - 3);
-      });
-      if (data.length > visible.length) {
-        ctx.fillStyle = "#667085";
-        ctx.textAlign = "left";
-        ctx.fillText(`+${data.length - visible.length} more`, labelPad, canvas.height - 10);
-      }
-      ctx.textAlign = "left";
-    }
-
-    function drawLineChart(id, rows, color) {
-      const {canvas, ctx} = chartContext(id);
-      const data = (rows || []).filter(r => Number.isFinite(Number(r.value)));
-      if (data.length < 2) return drawEmpty(ctx, canvas, "No curve yet");
-      const pad = 34;
-      const values = data.map(r => Number(r.value));
-      const min = Math.min(0, ...values), max = Math.max(1, ...values);
-      const xFor = i => pad + (i / (data.length - 1)) * (canvas.width - pad * 2);
-      const yFor = v => canvas.height - pad - ((v - min) / (max - min || 1)) * (canvas.height - pad * 2);
-      ctx.strokeStyle = "#d8dee8"; ctx.beginPath(); ctx.moveTo(pad, yFor(0)); ctx.lineTo(canvas.width - pad, yFor(0)); ctx.stroke();
-      ctx.strokeStyle = color; ctx.lineWidth = 2; ctx.beginPath();
-      data.forEach((row, i) => {
-        const x = xFor(i), y = yFor(Number(row.value));
-        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
-      });
-      ctx.stroke();
-      data.forEach((row, i) => {
-        const x = xFor(i), y = yFor(Number(row.value));
-        ctx.fillStyle = Number(row.value) < 0 ? "#b42318" : "#1b5fd6";
-        ctx.beginPath(); ctx.arc(x, y, 3, 0, Math.PI * 2); ctx.fill();
-      });
-      ctx.fillStyle = "#667085"; ctx.fillText(`Min ${money(min)}`, pad, canvas.height - 8); ctx.textAlign = "right"; ctx.fillText(`Max ${money(max)}`, canvas.width - pad, canvas.height - 8); ctx.textAlign = "left";
-    }
-
-    function renderSignals(rows) {
-      const head = ["Rank","Symbol","Score","Tier","Setup","EV/R","Win %","Risk","Quote","R/R","Liq","Trend","Mom","OBV","RS","RR","RSI","Vol x","MACD","Rel strength","Notes",""];
-      const body = rows.map((r, i) => `<tr>
-        <td>${i+1}</td><td>${r.symbol}</td><td>${r.score}</td>
-        <td class="${tierClass(r.tier)}">${r.tier}</td><td>${fmt(r.setup_type)}</td>
-        <td class="${evClass(r.ev && r.ev.expected_value_r)}">${num(r.ev && r.ev.expected_value_r)}</td>
-        <td>${pct(r.ev && r.ev.win_probability)}</td><td>${money(r.ev && r.ev.risk_usdt)}</td><td>${money(r.ev && r.ev.quote_amount)}</td><td>${r.risk_reward}</td>
-        <td>${num(r.score_breakdown && r.score_breakdown.liquidity)}</td><td>${num(r.score_breakdown && r.score_breakdown.trend)}</td>
-        <td>${num(r.score_breakdown && r.score_breakdown.momentum)}</td><td>${num(r.score_breakdown && r.score_breakdown.obv)}</td>
-        <td>${num(r.score_breakdown && r.score_breakdown.relative_strength)}</td><td>${num(r.score_breakdown && r.score_breakdown.risk_reward)}</td>
-        <td>${r.rsi}</td><td>${num(r.volume_ratio)}</td><td>${r.macd_status}</td><td>${r.relative_strength}</td>
-        <td>${r.notes}</td><td><button onclick="ignoreSignal(${r.id})">Ignore</button></td>
-      </tr>`).join("");
-      document.getElementById("signalsTable").innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
-    }
-
-    function renderTrades(rows, tableId, openOnly=false) {
-      const head = ["ID","Symbol","Signal time","Entry","Stop","TP1","TP2","Exit","Status","Exit order","PnL %","PnL USDT","Entry reason","Exit reason","Score",""];
-      const body = rows.map(r => `<tr>
-        <td>${r.id}</td><td>${r.symbol}</td><td>${r.entry_time}</td><td>${num(r.entry_price)}</td><td>${num(r.stop_loss)}</td>
-        <td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td><td>${num(r.exit_price)}</td><td>${r.status}</td><td>${fmt(r.exit_order_status || "")}</td>
-        <td>${num(r.pnl_percent)}</td><td>${num(r.pnl_usdt)}</td><td>${r.entry_reason}</td><td>${r.exit_reason}</td><td>${r.score_at_entry}</td>
-        <td>${r.status === "open" ? `<button onclick="closeTrade(${r.id}, ${r.entry_price})">Close</button>` : ""}</td>
-      </tr>`).join("");
-      document.getElementById(tableId).innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
-    }
-
-    function renderLiveIntents(rows) {
-      const head = ["ID","Symbol","Status","EV/R","Win %","Risk","Quote","Current","Drift %","Score","Setup","Stop","TP1","TP2","Validation","Actions"];
-      const body = rows.map(r => {
-        let validation = "";
-        let valid = false;
-        try {
-          const parsed = JSON.parse(r.validation_json || "{}");
-          valid = Boolean(parsed.ok);
-          validation = parsed.ok ? "OK" : (parsed.risk_problems || parsed.filter_notes || []).join("; ");
-        } catch (_) {
-          validation = r.validation_json || "";
-        }
-        const approveButton = r.status === "draft" && valid
-          ? `<button onclick="approveIntent(${r.id})">Approve</button>`
-          : "";
-        const rejectButton = ["draft","approved"].includes(r.status)
-          ? `<button class="danger" onclick="rejectIntent(${r.id})">Reject</button>`
-          : "";
-        const submitButton = r.status === "approved"
-          ? `<button class="danger" onclick="submitIntent(${r.id}, '${r.symbol}', ${Number(r.quote_amount) || 0})">Submit Buy</button>`
-          : "";
-        const stale = r.is_stale ? " stale" : "";
-        return `<tr>
-          <td><button onclick="showIntentDetail(${r.id})">${r.id}</button></td><td>${r.symbol}</td><td class="${stale}">${r.status}</td>
-          <td class="${evClass(r.ev && r.ev.expected_value_r)}">${num(r.ev && r.ev.expected_value_r)}</td><td>${pct(r.ev && r.ev.win_probability)}</td>
-          <td>${money(r.risk_usdt)}</td><td>${money(r.quote_amount)}</td><td>${num(r.current_price)}</td><td class="${stale}">${num(r.price_drift_percent)}</td>
-          <td>${num(r.current_score)}</td><td>${fmt(r.setup_type)}</td><td>${num(r.stop_loss)}</td><td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td>
-          <td>${fmt(validation)}</td><td>${approveButton} ${submitButton} ${rejectButton}</td>
-        </tr>`;
-      }).join("");
-      document.getElementById("liveIntentsTable").innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
-    }
-
-    function pnlClass(value) {
-      const n = Number(value);
-      if (!Number.isFinite(n) || n === 0) return "";
-      return n > 0 ? "profit" : "loss";
-    }
-    function evClass(value) {
-      const n = Number(value);
-      if (!Number.isFinite(n)) return "";
-      if (n >= 0.35) return "profit";
-      if (n >= 0.05) return "watch";
-      return "loss";
-    }
-    function pct(value) {
-      const n = Number(value);
-      return Number.isFinite(n) ? `${num(n * 100)}%` : "";
-    }
-
-    function renderPositions(rows) {
-      const head = ["Symbol","Entry","Current","Unreal PnL %","Unreal PnL USDT","Current score","Stop","TP1","TP2","Time in trade","Status notes",""];
-      const body = rows.map(r => `<tr>
-        <td>${r.symbol}</td><td>${num(r.entry_price)}</td><td>${num(r.current_price)}</td>
-        <td class="${pnlClass(r.unrealized_pnl_percent)}">${num(r.unrealized_pnl_percent)}</td>
-        <td class="${pnlClass(r.unrealized_pnl_usdt)}">${num(r.unrealized_pnl_usdt)}</td>
-        <td>${num(r.score_at_entry)}</td><td>${num(r.stop_loss)}</td><td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td>
-        <td>${fmt(r.time_in_trade)}</td><td>${fmt(r.status_notes)}</td>
-        <td><button onclick="closeTrade(${r.id}, ${r.current_price || r.entry_price})">Close</button></td>
-      </tr>`).join("");
-      document.getElementById("positionsTable").innerHTML = `<thead><tr>${head.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${body}</tbody>`;
-    }
-
-    function setNotice(message) {
-      document.getElementById("notice").textContent = message || "";
-    }
     async function withBusy(message, fn) {
       setNotice(message);
-      try {
-        await fn();
-      } catch (err) {
-        setNotice(err.message);
-        throw err;
-      } finally {
-        setTimeout(() => {
-          const current = document.getElementById("notice").textContent;
-          if (current === message) setNotice("");
-        }, 1200);
-      }
+      try { await fn(); }
+      catch (err) { setNotice(err.message, true); throw err; }
     }
+
+    function renderStatus(status, dashboard) {
+      const b = status.bot_status || {}, s = status.settings || {}, gates = status.live_gates || {};
+      mode.value = b.mode || "alert-only";
+      accountSize.value = s.account_size ?? "";
+      riskPct.value = s.risk_per_trade_percent ?? "";
+      scanInterval.value = s.scan_interval_minutes ?? "";
+      alerts.value = String(s.alerts_enabled || 0);
+      alertMethod.value = s.alert_method || "none";
+      const items = [
+        ["Bot", b.is_running ? "Running" : "Stopped", b.is_running ? "good" : "bad"],
+        ["Mode", b.mode || "unknown", ""],
+        ["Last scan", b.last_scan_time ? time(b.last_scan_time) : "Never", ""],
+        ["Active trades", (dashboard.active_trades || []).length, ""],
+        ["Exit issues", (dashboard.exit_issues || []).length, (dashboard.exit_issues || []).length ? "bad" : "good"],
+        ["New intents", ((dashboard.intents || {}).new || []).length, ""],
+        ["Live gates", gates.ready_for_submission ? "Ready" : "Locked", gates.ready_for_submission ? "good" : "warn"],
+        ["Errors", (dashboard.errors || []).length ? `${dashboard.errors.length} shown` : "None", (dashboard.errors || []).length ? "bad" : "good"],
+      ];
+      statusGrid.innerHTML = items.map(([k,v,c]) => `<div class="panel metric"><span class="label">${k}</span><span class="value ${c || ""}">${v}</span></div>`).join("");
+      lastRefreshed.textContent = `Last refreshed: ${time(dashboard.last_refreshed_at)}`;
+      activeCount.textContent = `${(dashboard.active_trades || []).length} active`;
+      if ((dashboard.errors || []).length) setNotice(dashboard.errors.slice(0, 3).join(" · "), true);
+      else setNotice("Dashboard synced.");
+    }
+
+    function renderReadiness(live) {
+      const checks = live.checks || [];
+      liveChecks.innerHTML = checks.map(c => `
+        <div class="metric panel">
+          <span class="label">${c.name}</span>
+          <span class="value ${c.ok ? "profit" : "loss"}">${c.ok ? "OK" : "Locked"}</span>
+          <span class="small muted">${c.detail || ""}</span>
+        </div>`).join("");
+    }
+
+    function tradeCard(t) {
+      const state = t.lifecycle_state || t.status;
+      const exitState = t.exit_strategy_state || t.exit_order_status || "unknown";
+      return `<article class="card">
+        <div class="card-head">
+          <div><div class="symbol">${t.symbol}</div><div class="small muted">${fmt(t.execution_type)} · ${time(t.entry_time)}</div></div>
+          <span class="pill ${stateClass(state)}">${fmt(state)}</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="label">Entry</span><strong>${num(t.entry_price)}</strong></div>
+          <div class="fact"><span class="label">Current</span><strong>${num(t.current_price)}</strong></div>
+          <div class="fact"><span class="label">Size</span><strong>${num(t.remaining_position_size || t.position_size)}</strong></div>
+          <div class="fact"><span class="label">PnL</span><strong class="${pnlClass(t.pnl_usdt)}">${money(t.pnl_usdt)} USDT</strong></div>
+          <div class="fact"><span class="label">Stop</span><strong>${num(t.stop_loss)}</strong></div>
+          <div class="fact"><span class="label">TP1</span><strong>${num(t.take_profit_1)}</strong></div>
+          <div class="fact"><span class="label">TP2</span><strong>${num(t.take_profit_2)}</strong></div>
+          <div class="fact"><span class="label">Exit strategy</span><strong class="${stateClass(exitState)}">${fmt(exitState)}</strong></div>
+        </div>
+        ${t.exit_warning ? `<div class="pill bad">${t.exit_warning}</div>` : ""}
+        <div class="actions">
+          <button onclick="syncExits(${t.id})">Refresh</button>
+          ${t.execution_type === "live" ? `<button onclick="retryExits(${t.id})">Recreate Exit</button>` : ""}
+          <button class="danger" onclick="markManuallyClosed(${t.id}, '${t.symbol}')">Mark Closed</button>
+          <button onclick="showTradeEvents(${t.id})">Logs</button>
+        </div>
+        <details><summary>Details</summary>
+          <div class="detail-grid">
+            <div><span class="label">Score</span><br><strong>${fmt(t.score_at_entry)}</strong></div>
+            <div><span class="label">Age</span><br><strong>${fmt(t.time_in_trade)}</strong></div>
+            <div><span class="label">Entry order</span><br><strong>${fmt(t.exchange_order_id)}</strong></div>
+            <div><span class="label">Last reconciled</span><br><strong>${time(t.last_reconciled_at)}</strong></div>
+            <div><span class="label">Reason</span><br><strong>${fmt(t.entry_reason)}</strong></div>
+            <div><span class="label">Status note</span><br><strong>${fmt(t.status_notes || t.exit_reason)}</strong></div>
+          </div>
+        </details>
+      </article>`;
+    }
+
+    function intentCard(i) {
+      const validation = i.validation || {};
+      const validationText = validation.ok ? "OK" : [...(validation.risk_problems || []), ...(validation.filter_notes || [])].join("; ");
+      const ev = i.ev || {};
+      const canExecute = ["draft","approved"].includes(i.status);
+      return `<article class="card">
+        <div class="card-head">
+          <div><div class="symbol">${i.symbol}</div><div class="small muted">First ${time(i.first_seen_at || i.timestamp)} · Last ${time(i.last_seen_at || i.timestamp)}</div></div>
+          <span class="pill ${stateClass(i.lifecycle_state)}">${fmt(i.lifecycle_state || i.status)}</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="label">Score</span><strong>${num(i.current_score)}</strong></div>
+          <div class="fact"><span class="label">EV/R</span><strong class="${Number(ev.expected_value_r) > 0 ? "profit" : "loss"}">${num(ev.expected_value_r)}</strong></div>
+          <div class="fact"><span class="label">Quote</span><strong>${money(i.quote_amount)} USDT</strong></div>
+          <div class="fact"><span class="label">Current</span><strong>${num(i.current_price)}</strong></div>
+          <div class="fact"><span class="label">Stop</span><strong>${num(i.stop_loss)}</strong></div>
+          <div class="fact"><span class="label">TP1</span><strong>${num(i.take_profit_1)}</strong></div>
+          <div class="fact"><span class="label">TP2</span><strong>${num(i.take_profit_2)}</strong></div>
+          <div class="fact"><span class="label">Seen</span><strong>${fmt(i.seen_count)}</strong></div>
+        </div>
+        <div class="actions">
+          ${canExecute ? `<button class="primary" onclick="executeIntent(${i.id}, '${i.symbol}', ${Number(i.quote_amount) || 0}, '${i.status}')">Execute</button>` : ""}
+          ${i.lifecycle_state === "new" ? `<button onclick="markSeen(${i.id})">Mark Seen</button>` : ""}
+          ${!["ignored","archived","executed"].includes(i.lifecycle_state) ? `<button class="danger" onclick="ignoreIntent(${i.id})">Ignore</button><button onclick="archiveIntent(${i.id})">Archive</button>` : ""}
+        </div>
+        <details><summary>Details</summary>
+          <div class="detail-grid">
+            <div><span class="label">Setup</span><br><strong>${fmt(i.setup_type)}</strong></div>
+            <div><span class="label">Win probability</span><br><strong>${pct(Number(ev.win_probability || 0) * 100)}</strong></div>
+            <div><span class="label">Drift</span><br><strong>${pct(i.price_drift_percent)}</strong></div>
+            <div><span class="label">Validation</span><br><strong>${fmt(validationText)}</strong></div>
+            <div><span class="label">Reason</span><br><strong>${fmt(i.reason)}</strong></div>
+            <div><span class="label">Status reason</span><br><strong>${fmt(i.last_status_reason)}</strong></div>
+          </div>
+        </details>
+      </article>`;
+    }
+
+    function renderCards(id, rows, renderer, emptyText) {
+      const node = document.getElementById(id);
+      node.innerHTML = rows && rows.length ? rows.map(renderer).join("") : `<div class="empty">${emptyText}</div>`;
+    }
+
+    function renderEvents(rows) {
+      eventLog.innerHTML = rows && rows.length ? rows.map(e => `
+        <div class="log-line">
+          <strong>${fmt(e.event_type)}</strong> <span class="small muted">${time(e.timestamp)} · ${fmt(e.symbol)}</span><br>
+          <span>${fmt(e.message)}</span>
+        </div>`).join("") : `<div class="empty">No trade events yet.</div>`;
+    }
+
     async function refresh() {
       try {
-        const [snapshot, live, portfolio] = await Promise.all([
-          api("/api/quant/snapshot"), api("/api/live/readiness"), api("/api/portfolio")
+        const [status, live, dashboard] = await Promise.all([
+          api("/api/status"), api("/api/live/readiness"), api("/api/dashboard")
         ]);
-        const liveMode = snapshot.bot_status && snapshot.bot_status.mode === "live-trading";
-        renderStatus(snapshot);
-        renderLiveReadiness(live);
-        renderPortfolio(portfolio);
-        renderSignals(snapshot.signals || []);
-        renderLiveIntents(snapshot.live_intents || []);
-        if (!liveMode) {
-          const [performance, trades, positions] = await Promise.all([
-            api("/api/performance"), api("/api/trades"), api("/api/positions")
-          ]);
-          renderPerformance(performance);
-          renderTrades(trades, "tradesTable");
-          renderPositions(positions);
-        } else {
-          document.getElementById("tradesTable").innerHTML = "";
-          document.getElementById("positionsTable").innerHTML = "";
-        }
-      } catch (err) { alert(err.message); }
+        renderStatus(status, dashboard);
+        renderReadiness(live);
+        renderCards("activeTrades", dashboard.active_trades || [], tradeCard, "No active live trades.");
+        renderCards("exitIssues", dashboard.exit_issues || [], tradeCard, "No exit strategy issues.");
+        renderCards("newIntents", (dashboard.intents || {}).new || [], intentCard, "No new trade intents.");
+        renderCards("seenIntents", (dashboard.intents || {}).seen || [], intentCard, "No repeated or stale intents.");
+        renderCards("ignoredIntents", (dashboard.intents || {}).ignored || [], intentCard, "No ignored or archived intents.");
+        renderCards("closedTrades", dashboard.closed_trades || [], tradeCard, "No closed trades yet.");
+        renderEvents(dashboard.recent_events || []);
+      } catch (err) {
+        setNotice(err.message, true);
+      }
     }
-    async function refreshLiveReadiness() {
-      renderLiveReadiness(await api("/api/live/readiness"));
-    }
+
+    async function refreshLiveReadiness() { renderReadiness(await api("/api/live/readiness")); }
     async function testBinanceAccount() {
-      const confirmation = prompt("This sends your configured Binance API credentials to Binance for an account-readiness check. Type exactly: TEST BINANCE ACCOUNT");
+      const confirmation = prompt("Type exactly: TEST BINANCE ACCOUNT");
       if (confirmation !== "TEST BINANCE ACCOUNT") return;
       await withBusy("Testing Binance account access...", async () => {
-        const result = await api("/api/live/readiness", {method:"POST", body:JSON.stringify({include_account_check:true, confirmation})});
-        renderLiveReadiness(result);
-        setNotice(result.account_check && result.account_check.detail ? result.account_check.detail : "Account test completed.");
+        renderReadiness(await api("/api/live/readiness", {method:"POST", body:JSON.stringify({include_account_check:true, confirmation})}));
       });
     }
     async function testSpotTradePermission() {
-      const confirmation = prompt("This sends a Binance /api/v3/order/test market BUY payload using your configured API credentials. Binance validates trade permission but does not place an order. Type exactly: TEST SPOT TRADE PERMISSION");
+      const confirmation = prompt("Type exactly: TEST SPOT TRADE PERMISSION");
       if (confirmation !== "TEST SPOT TRADE PERMISSION") return;
       await withBusy("Testing Binance spot trade permission...", async () => {
         const result = await api("/api/live/trade-permission-test", {method:"POST", body:JSON.stringify({symbol:"DOGE/USDT", quote_amount:6, confirmation})});
-        document.getElementById("tradePermissionCheck").textContent = result.detail || "No result";
-        setNotice(result.detail || "Spot trade permission test completed.");
+        setNotice(result.detail || "Spot trade permission test completed.", !result.ok);
       });
     }
     async function applyModeSelection() {
-      const modeValue = mode.value;
       let confirmation = null;
-      if (modeValue === "live-trading") {
+      if (mode.value === "live-trading") {
         confirmation = prompt("Type exactly: ENABLE LIVE TRADING");
         confirmation = confirmation ? confirmation.trim().replace(/^['"]|['"]$/g, "").trim() : confirmation;
-        if (confirmation !== "ENABLE LIVE TRADING") return;
+        if (confirmation !== "ENABLE LIVE TRADING") return false;
       }
-      await api("/api/mode", {method:"POST", body:JSON.stringify({mode:modeValue, confirmation})});
+      await api("/api/mode", {method:"POST", body:JSON.stringify({mode:mode.value, confirmation})});
+      return true;
     }
-    async function startBot(){
-      await withBusy("Applying settings, starting bot, and queueing a background scan...", async () => {
-        await saveSettings(false);
-        await applyModeSelection();
-        const result = await api("/api/start", {method:"POST"});
-        setNotice(result.scan && result.scan.queued ? "Bot started. Background scan queued." : "Bot started. A scan is already running.");
-        await refresh();
-      });
-    }
-    async function stopBot(){ await api("/api/stop", {method:"POST"}); refresh(); }
-    async function scanNow(){
-      await withBusy("Queueing a background scan...", async () => {
-        const result = await api("/api/scan", {method:"POST"});
-        setNotice(result.scan && result.scan.queued ? "Background scan queued." : "A scan is already running.");
-        await refresh();
-      });
-    }
+    async function startBot(){ await withBusy("Starting bot and queueing scan...", async () => { await saveSettings(false); if (await applyModeSelection()) await api("/api/start", {method:"POST"}); await refresh(); }); }
+    async function stopBot(){ await api("/api/stop", {method:"POST"}); await refresh(); }
+    async function scanNow(){ await withBusy("Queueing scan...", async () => { await api("/api/scan", {method:"POST"}); await refresh(); }); }
     async function saveSettings(doRefresh=true){
       await api("/api/settings", {method:"POST", body:JSON.stringify({
         account_size:Number(accountSize.value), risk_per_trade_percent:Number(riskPct.value),
         scan_interval_minutes:Number(scanInterval.value), alerts_enabled:alerts.value === "1", alert_method:alertMethod.value
       })});
-      if (doRefresh) refresh();
+      if (doRefresh) await refresh();
     }
-    async function changeMode(){
-      await applyModeSelection(); refresh();
+    async function changeMode(){ if (await applyModeSelection()) await refresh(); }
+    async function refreshPortfolioState(){ await withBusy("Reconciling Binance orders and fills...", async () => { await api("/api/portfolio/refresh", {method:"POST"}); await refresh(); }); }
+    async function syncExits(id){ await withBusy("Refreshing trade exit status...", async () => { await api(`/api/trades/${id}/sync-exits`, {method:"POST"}); await refresh(); }); }
+    async function retryExits(id){ await withBusy("Recreating exit strategy if safe...", async () => { await api(`/api/trades/${id}/retry-exits`, {method:"POST"}); await refresh(); }); }
+    async function markManuallyClosed(id, symbol) {
+      const ok = confirm(`Mark ${symbol} trade ${id} as manually closed? This does not delete the record or place an order.`);
+      if (!ok) return;
+      const reason = prompt("Reason", "Closed manually outside the app") || "Closed manually outside the app";
+      await withBusy("Marking trade manually closed...", async () => {
+        await api(`/api/trades/${id}/mark-manually-closed`, {method:"POST", body:JSON.stringify({reason})});
+        await refresh();
+      });
     }
-    async function ignoreSignal(id){ await api(`/api/signals/${id}/ignore`, {method:"POST"}); refresh(); }
-    async function closeTrade(id, fallback){
-      const price = Number(prompt("Exit price", fallback));
-      if (!price) return;
-      const reason = prompt("Exit reason", "manual close") || "manual close";
-      await api(`/api/trades/${id}/close`, {method:"POST", body:JSON.stringify({exit_price:price, reason})}); refresh();
+    async function executeIntent(id, symbol, quoteAmount, status) {
+      const confirmation = prompt(`This submits a LIVE Binance spot market BUY for ${symbol} using about ${money(quoteAmount)} USDT. Type exactly: SUBMIT LIVE BUY`);
+      if (confirmation !== "SUBMIT LIVE BUY") return;
+      await withBusy(`Submitting live buy for ${symbol}...`, async () => {
+        if (status === "draft") await api(`/api/live/intents/${id}/approve`, {method:"POST"});
+        await api(`/api/live/intents/${id}/submit`, {method:"POST"});
+        await refresh();
+      });
     }
-    async function retryExits(id) {
-      await api(`/api/trades/${id}/retry-exits`, {method:"POST"});
-      await refresh();
-    }
-    async function syncExits(id) {
-      await api(`/api/trades/${id}/sync-exits`, {method:"POST"});
-      await refresh();
-    }
-    async function refreshPortfolioState() {
-      await api("/api/portfolio/refresh", {method:"POST"});
-      await refresh();
-    }
-    async function approveIntent(id) {
-      await api(`/api/live/intents/${id}/approve`, {method:"POST"});
-      await refresh();
-    }
-    async function rejectIntent(id) {
-      const reason = prompt("Reject reason", "Rejected manually") || "Rejected manually";
+    async function ignoreIntent(id) {
+      const reason = prompt("Ignore reason", "Ignored manually") || "Ignored manually";
       await api(`/api/live/intents/${id}/reject`, {method:"POST", body:JSON.stringify({reason})});
       await refresh();
     }
-    async function submitIntent(id, symbol, quoteAmount) {
-      const confirmation = prompt(`This submits a LIVE Binance spot market BUY for ${symbol} using about ${money(quoteAmount)} USDT. Type exactly: SUBMIT LIVE BUY`);
-      if (confirmation !== "SUBMIT LIVE BUY") return;
-      await api(`/api/live/intents/${id}/submit`, {method:"POST"});
-      await refresh();
+    async function archiveIntent(id){ await api(`/api/live/intents/${id}/archive`, {method:"POST"}); await refresh(); }
+    async function markSeen(id){ await api(`/api/live/intents/${id}/seen`, {method:"POST"}); await refresh(); }
+    async function showTradeEvents(id) {
+      const rows = await api(`/api/trades/${id}/events`);
+      renderEvents(rows);
+      document.querySelector("summary").scrollIntoView({behavior:"smooth", block:"nearest"});
     }
-    async function showIntentDetail(id) {
-      const detail = await api(`/api/live/intents/${id}`);
-      const intent = detail.intent || {};
-      const signal = detail.signal || {};
-      const ev = intent.ev || {};
-      const notes = (ev.ev_notes || []).map(n => `<li>${n}</li>`).join("");
-      const validation = intent.validation || {};
-      document.getElementById("intentDetailSection").style.display = "";
-      document.getElementById("intentDetail").innerHTML = `
-        <div class="grid">
-          <div class="panel metric"><span class="label">Symbol</span><span class="value">${intent.symbol || ""}</span></div>
-          <div class="panel metric"><span class="label">Status</span><span class="value">${intent.status || ""}</span></div>
-          <div class="panel metric"><span class="label">EV/R</span><span class="value ${evClass(ev.expected_value_r)}">${num(ev.expected_value_r)}</span></div>
-          <div class="panel metric"><span class="label">Win probability</span><span class="value">${pct(ev.win_probability)}</span></div>
-          <div class="panel metric"><span class="label">Risk</span><span class="value">${money(ev.risk_usdt)} USDT</span></div>
-          <div class="panel metric"><span class="label">Quote</span><span class="value">${money(intent.quote_amount)} USDT</span></div>
-          <div class="panel metric"><span class="label">Current price</span><span class="value">${num(intent.current_price)}</span></div>
-          <div class="panel metric"><span class="label">Price drift</span><span class="value">${num(intent.price_drift_percent)}%</span></div>
-        </div>
-        <div class="panel" style="margin-top:10px">
-          <h2>Reason Chain</h2>
-          <p><strong>Intent:</strong> ${fmt(intent.reason)}</p>
-          <p><strong>Setup:</strong> ${fmt(intent.setup_type)} · <strong>Trend:</strong> ${fmt(signal.trend_status)} · <strong>OBV:</strong> ${fmt(signal.obv_status)} · <strong>MACD:</strong> ${fmt(signal.macd_status)}</p>
-          <p><strong>Validation:</strong> ${validation.ok ? "OK" : fmt([...(validation.risk_problems || []), ...(validation.filter_notes || [])].join("; "))}</p>
-          <p><strong>EV notes:</strong></p><ul>${notes}</ul>
-        </div>`;
-    }
-    function closeIntentDetail() {
-      document.getElementById("intentDetailSection").style.display = "none";
-    }
+
     refresh();
     setInterval(refresh, 30000);
   </script>

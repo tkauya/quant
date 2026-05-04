@@ -48,6 +48,8 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_time TEXT,
     exit_price REAL,
     status TEXT NOT NULL,
+    lifecycle_state TEXT NOT NULL DEFAULT 'open',
+    exit_strategy_state TEXT NOT NULL DEFAULT 'unknown',
     pnl_percent REAL,
     pnl_usdt REAL,
     entry_reason TEXT NOT NULL DEFAULT '',
@@ -58,6 +60,11 @@ CREATE TABLE IF NOT EXISTS trades (
     exit_order_list_id TEXT,
     exit_order_status TEXT NOT NULL DEFAULT '',
     exit_order_json TEXT NOT NULL DEFAULT '{}',
+    manually_closed_at TEXT,
+    closed_detected_at TEXT,
+    last_reconciled_at TEXT,
+    last_reconcile_error TEXT NOT NULL DEFAULT '',
+    exit_warning TEXT NOT NULL DEFAULT '',
     remaining_position_size REAL,
     tp1_filled INTEGER NOT NULL DEFAULT 0,
     tp2_filled INTEGER NOT NULL DEFAULT 0,
@@ -98,6 +105,20 @@ CREATE TABLE IF NOT EXISTS event_log (
     context TEXT NOT NULL DEFAULT ''
 );
 
+CREATE TABLE IF NOT EXISTS trade_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    trade_id INTEGER,
+    intent_id INTEGER,
+    symbol TEXT,
+    event_type TEXT NOT NULL,
+    level TEXT NOT NULL DEFAULT 'INFO',
+    message TEXT NOT NULL,
+    context TEXT NOT NULL DEFAULT '{}',
+    FOREIGN KEY(trade_id) REFERENCES trades(id),
+    FOREIGN KEY(intent_id) REFERENCES live_order_intents(id)
+);
+
 CREATE TABLE IF NOT EXISTS live_order_intents (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     timestamp TEXT NOT NULL,
@@ -117,6 +138,15 @@ CREATE TABLE IF NOT EXISTS live_order_intents (
     ev_json TEXT NOT NULL DEFAULT '{}',
     exchange_order_id TEXT,
     submitted_at TEXT,
+    lifecycle_state TEXT NOT NULL DEFAULT 'new',
+    first_seen_at TEXT,
+    last_seen_at TEXT,
+    scan_seen_at TEXT,
+    seen_count INTEGER NOT NULL DEFAULT 1,
+    ignored_at TEXT,
+    archived_at TEXT,
+    executed_trade_id INTEGER,
+    last_status_reason TEXT NOT NULL DEFAULT '',
     FOREIGN KEY(signal_id) REFERENCES signals(id)
 );
 
@@ -127,6 +157,8 @@ CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_live_order_intents_status ON live_order_intents(status);
+CREATE INDEX IF NOT EXISTS idx_live_order_intents_lifecycle ON live_order_intents(lifecycle_state);
+CREATE INDEX IF NOT EXISTS idx_trade_events_trade_id ON trade_events(trade_id);
 """
 
 
@@ -160,6 +192,13 @@ class Database:
                 "volume_ratio": "REAL",
             },
             "trades": {
+                "lifecycle_state": "TEXT NOT NULL DEFAULT 'open'",
+                "exit_strategy_state": "TEXT NOT NULL DEFAULT 'unknown'",
+                "manually_closed_at": "TEXT",
+                "closed_detected_at": "TEXT",
+                "last_reconciled_at": "TEXT",
+                "last_reconcile_error": "TEXT NOT NULL DEFAULT ''",
+                "exit_warning": "TEXT NOT NULL DEFAULT ''",
                 "exchange_order_id": "TEXT",
                 "exit_order_list_id": "TEXT",
                 "exit_order_status": "TEXT NOT NULL DEFAULT ''",
@@ -176,6 +215,15 @@ class Database:
                 "ev_json": "TEXT NOT NULL DEFAULT '{}'",
                 "exchange_order_id": "TEXT",
                 "submitted_at": "TEXT",
+                "lifecycle_state": "TEXT NOT NULL DEFAULT 'new'",
+                "first_seen_at": "TEXT",
+                "last_seen_at": "TEXT",
+                "scan_seen_at": "TEXT",
+                "seen_count": "INTEGER NOT NULL DEFAULT 1",
+                "ignored_at": "TEXT",
+                "archived_at": "TEXT",
+                "executed_trade_id": "INTEGER",
+                "last_status_reason": "TEXT NOT NULL DEFAULT ''",
             },
         }
 
@@ -187,6 +235,24 @@ class Database:
             for column, ddl in columns.items():
                 if column not in existing:
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+
+        conn.execute(
+            "UPDATE trades SET lifecycle_state = status WHERE lifecycle_state = 'open' AND status <> 'open'"
+        )
+        conn.execute(
+            """
+            UPDATE trades
+            SET exit_strategy_state = CASE
+                WHEN exit_order_status IN ('placed', 'stop_only_placed', 'synced_protected', 'emergency_stop_placed') THEN 'active'
+                WHEN exit_order_status = 'failed' THEN 'failed'
+                WHEN status = 'open' AND execution_type = 'live' THEN 'pending'
+                ELSE exit_strategy_state
+            END
+            """
+        )
+        conn.execute(
+            "UPDATE live_order_intents SET first_seen_at = COALESCE(first_seen_at, timestamp), last_seen_at = COALESCE(last_seen_at, timestamp), scan_seen_at = COALESCE(scan_seen_at, timestamp)"
+        )
 
     def fetch_one(self, query: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
         with self.connect() as conn:
