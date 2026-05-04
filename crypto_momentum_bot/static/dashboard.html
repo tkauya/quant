@@ -148,7 +148,7 @@
           <canvas id="tierChart" width="420" height="260"></canvas>
         </div>
         <div class="chart-box">
-          <div class="section-title"><h2>Trade Status</h2><span class="small-note">All paper trades</span></div>
+          <div class="section-title"><h2>Trade Status</h2><span class="small-note">All non-live history</span></div>
           <canvas id="statusChart" width="420" height="260"></canvas>
         </div>
       </div>
@@ -157,7 +157,8 @@
     <section class="panel" id="portfolioSection">
       <div class="section-title">
         <h2>Portfolio Performance</h2>
-        <span class="small-note">All trade records, marked to current Binance prices where open</span>
+        <span class="small-note">Refresh syncs Binance fills, exits, open exposure and PnL</span>
+        <button onclick="refreshPortfolioState()">Sync Portfolio</button>
       </div>
       <div class="kpi-grid" id="portfolioGrid"></div>
       <div class="chart-grid" style="margin-top:12px">
@@ -336,7 +337,7 @@
         const currentOrExit = r.status === "open" ? r.current_price : r.exit_price;
         return `<tr>
           <td>${r.id}</td><td>${fmt(r.execution_type || "paper")}</td><td>${r.symbol}</td><td>${r.status}</td><td>${fmt(r.exit_order_status || "")}</td><td>${fmt(r.entry_time)}</td>
-          <td>${num(r.entry_price)}</td><td>${num(currentOrExit)}</td><td>${num(r.position_size)}</td>
+          <td>${num(r.entry_price)}</td><td>${num(currentOrExit)}</td><td>${num(r.remaining_position_size || r.position_size)}</td>
           <td>${money(r.entry_value_usdt)}</td><td>${money(r.current_value_usdt)}</td>
           <td class="${pnlClass(r.pnl_percent)}">${num(r.pnl_percent)}</td><td class="${pnlClass(r.pnl_usdt)}">${money(r.pnl_usdt)}</td>
           <td>${num(r.stop_loss)}</td><td>${num(r.take_profit_1)}</td><td>${num(r.take_profit_2)}</td>
@@ -632,6 +633,10 @@
     }
     async function syncExits(id) {
       await api(`/api/trades/${id}/sync-exits`, {method:"POST"});
+      await refresh();
+    }
+    async function refreshPortfolioState() {
+      await api("/api/portfolio/refresh", {method:"POST"});
       await refresh();
     }
     async function approveIntent(id) {

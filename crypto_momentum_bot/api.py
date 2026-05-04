@@ -110,6 +110,13 @@ def create_router(db: Database, scanner: MomentumScanner, scheduler: BotSchedule
     def portfolio():
         return scanner.get_portfolio()
 
+    @router.post("/portfolio/refresh")
+    def refresh_portfolio():
+        try:
+            return scanner.refresh_live_portfolio_state()
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     @router.get("/quant/snapshot")
     def quant_snapshot():
         snapshot = scanner.get_quant_snapshot()

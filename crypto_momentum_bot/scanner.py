@@ -587,6 +587,7 @@ class MomentumScanner:
         return self._with_live_pnl(rows)
 
     def get_portfolio(self) -> dict[str, Any]:
+        self.refresh_live_portfolio_state()
         settings = self.db.fetch_one("SELECT account_size FROM settings WHERE id = 1") or {}
         account_size = float(settings.get("account_size") or 0)
         trades = self.get_trade_history(limit=100000)
@@ -665,7 +666,144 @@ class MomentumScanner:
             },
         }
 
+    def refresh_live_portfolio_state(self) -> dict[str, Any]:
+        """
+        Single lightweight reconciliation path for live trades.
+
+        For each open live trade:
+        - sync open protective sell orders from Binance
+        - read account fills since entry
+        - if sell fills cover the position, close the trade and write PnL
+        - if partially sold, update remaining_position_size and realized PnL so far
+
+        This intentionally assumes one open live trade per symbol, which the scanner now enforces.
+        """
+        rows = self.db.fetch_all(
+            "SELECT * FROM trades WHERE status = 'open' AND execution_type = 'live' ORDER BY entry_time ASC"
+        )
+        refreshed: list[dict[str, Any]] = []
+        errors: list[str] = []
+        for trade in rows:
+            try:
+                refreshed.append(self._refresh_live_trade_from_exchange(trade))
+            except Exception as exc:
+                message = f"{trade.get('symbol')} trade {trade.get('id')}: {exc}"
+                errors.append(message)
+                self.log("ERROR", "Live portfolio refresh failed", {"trade": trade, "error": str(exc)})
+        return {"refreshed": refreshed, "errors": errors}
+
+    def _refresh_live_trade_from_exchange(self, trade: dict[str, Any]) -> dict[str, Any]:
+        trade_id = int(trade["id"])
+        symbol = str(trade["symbol"])
+        entry_time = str(trade["entry_time"])
+        entry_price = float(trade.get("entry_price") or 0)
+        position_size = float(trade.get("position_size") or 0)
+        if position_size <= 0 or entry_price <= 0:
+            return {"trade_id": trade_id, "symbol": symbol, "status": "skipped", "reason": "missing entry size/price"}
+
+        exit_sync = self.live_executor.sync_exit_orders_for_trade(trade_id)
+        since_ms = self._timestamp_ms(entry_time)
+        fills = self.market_data.private_exchange().fetch_my_trades(symbol, since=since_ms)
+        sell_fills = [fill for fill in fills if str(fill.get("side") or "").lower() == "sell"]
+
+        sold_qty = sum(float(fill.get("amount") or 0) for fill in sell_fills)
+        sell_proceeds = sum(float(fill.get("cost") or 0) for fill in sell_fills)
+        sell_fees = self._quote_fees_usdt(sell_fills)
+        average_exit = sell_proceeds / sold_qty if sold_qty > 0 else None
+        remaining_qty = max(position_size - sold_qty, 0)
+        sold_fraction = min(sold_qty / position_size, 1) if position_size else 0
+        estimated_buy_fee = entry_price * sold_qty * 0.001
+        realized_pnl = sell_proceeds - (entry_price * sold_qty) - sell_fees - estimated_buy_fee
+        realized_pct = (realized_pnl / (entry_price * position_size)) * 100 if position_size else 0
+
+        if sold_qty >= position_size * 0.98 and average_exit:
+            self.db.execute(
+                """
+                UPDATE trades
+                SET status = 'closed',
+                    exit_time = ?,
+                    exit_price = ?,
+                    pnl_percent = ?,
+                    pnl_usdt = ?,
+                    exit_reason = ?,
+                    remaining_position_size = 0
+                WHERE id = ?
+                """,
+                (
+                    self._last_fill_time(sell_fills) or now_iso(),
+                    round(float(average_exit), 8),
+                    round(realized_pct, 4),
+                    round(realized_pnl, 4),
+                    "Closed from Binance sell fills on refresh",
+                    trade_id,
+                ),
+            )
+            status = "closed"
+        elif sold_qty > 0:
+            self.db.execute(
+                """
+                UPDATE trades
+                SET remaining_position_size = ?,
+                    pnl_percent = ?,
+                    pnl_usdt = ?,
+                    exit_reason = ?
+                WHERE id = ?
+                """,
+                (
+                    round(remaining_qty, 8),
+                    round(realized_pct, 4),
+                    round(realized_pnl, 4),
+                    f"Partially sold on Binance: {sold_fraction:.1%} filled",
+                    trade_id,
+                ),
+            )
+            status = "partial"
+        else:
+            self.db.execute(
+                "UPDATE trades SET remaining_position_size = COALESCE(remaining_position_size, position_size) WHERE id = ?",
+                (trade_id,),
+            )
+            status = "open"
+
+        return {
+            "trade_id": trade_id,
+            "symbol": symbol,
+            "status": status,
+            "sold_qty": round(sold_qty, 8),
+            "remaining_qty": round(remaining_qty, 8),
+            "average_exit": round(float(average_exit), 8) if average_exit else None,
+            "realized_pnl_usdt": round(realized_pnl, 4),
+            "exit_sync": exit_sync.get("status"),
+        }
+
+    def _timestamp_ms(self, value: str) -> int | None:
+        try:
+            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return int(dt.timestamp() * 1000)
+        except Exception:
+            return None
+
+    def _last_fill_time(self, fills: list[dict[str, Any]]) -> str | None:
+        timestamps = [int(fill.get("timestamp") or 0) for fill in fills if fill.get("timestamp")]
+        if not timestamps:
+            return None
+        return datetime.fromtimestamp(max(timestamps) / 1000, timezone.utc).isoformat()
+
+    def _quote_fees_usdt(self, fills: list[dict[str, Any]]) -> float:
+        total = 0.0
+        for fill in fills:
+            fees = list(fill.get("fees") or [])
+            fee = fill.get("fee")
+            if fee:
+                fees.append(fee)
+            for item in fees:
+                currency = str(item.get("currency") or "").upper()
+                if currency in {"USDT", "FDUSD", "USDC"}:
+                    total += float(item.get("cost") or 0)
+        return total
+
     def get_performance(self) -> dict[str, Any]:
+        self.refresh_live_portfolio_state()
         trades = self.get_trade_history(limit=100000)
         status = self.db.fetch_one("SELECT * FROM bot_status WHERE id = 1") or {}
         settings = self.db.fetch_one("SELECT * FROM settings WHERE id = 1") or {}
@@ -790,18 +928,24 @@ class MomentumScanner:
             if item.get("status") == "open":
                 current_price = prices.get(item["symbol"], item["entry_price"])
                 entry_price = float(item["entry_price"])
-                position_size = float(item.get("position_size") or 0)
-                entry_value = entry_price * position_size
-                current_value = current_price * position_size
-                pnl_percent = ((current_price - entry_price) / entry_price) * 100 if entry_price else 0
-                pnl_usdt = (current_price - entry_price) * position_size
+                original_size = float(item.get("position_size") or 0)
+                remaining_size = float(item.get("remaining_position_size") or original_size)
+                realized_pnl = float(item.get("pnl_usdt") or 0) if item.get("execution_type") == "live" else 0.0
+                entry_value = entry_price * remaining_size
+                current_value = current_price * remaining_size
+                unrealized_pnl = (current_price - entry_price) * remaining_size
+                total_pnl = realized_pnl + unrealized_pnl
+                original_entry_value = entry_price * original_size
+                pnl_percent = (total_pnl / original_entry_value) * 100 if original_entry_value else 0
                 item["current_price"] = round(current_price, 8)
+                item["remaining_position_size"] = round(remaining_size, 8)
                 item["entry_value_usdt"] = round(entry_value, 4)
                 item["current_value_usdt"] = round(current_value, 4)
                 item["unrealized_pnl_percent"] = round(pnl_percent, 4)
-                item["unrealized_pnl_usdt"] = round(pnl_usdt, 4)
+                item["unrealized_pnl_usdt"] = round(unrealized_pnl, 4)
+                item["realized_pnl_usdt"] = round(realized_pnl, 4)
                 item["pnl_percent"] = item["unrealized_pnl_percent"]
-                item["pnl_usdt"] = item["unrealized_pnl_usdt"]
+                item["pnl_usdt"] = round(total_pnl, 4)
                 item["time_in_trade"] = self._time_in_trade(item["entry_time"])
                 item["status_notes"] = self._position_status_note(item, current_price)
             else:
