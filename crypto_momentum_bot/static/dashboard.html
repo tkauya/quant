@@ -96,6 +96,11 @@
     <section class="kpis" id="statusGrid"></section>
 
     <section class="panel">
+      <div class="section-head"><h2>Strategy Performance</h2><span class="small muted">Updates after Binance sync and partial closes</span></div>
+      <div class="kpis" id="strategyGrid" style="margin-top:10px"></div>
+    </section>
+
+    <section class="panel">
       <div class="section-head"><h2>Controls</h2><span class="small muted" id="lastRefreshed">Last refreshed: never</span></div>
       <div class="forms" style="margin-top:10px">
         <label><span class="label">Mode</span><select id="mode"><option>alert-only</option><option>paper-trading</option><option>live-trading</option></select></label>
@@ -216,10 +221,29 @@
         ["Errors", (dashboard.errors || []).length ? `${dashboard.errors.length} shown` : "None", (dashboard.errors || []).length ? "bad" : "good"],
       ];
       statusGrid.innerHTML = items.map(([k,v,c]) => `<div class="panel metric"><span class="label">${k}</span><span class="value ${c || ""}">${v}</span></div>`).join("");
+      renderStrategy(summary);
       lastRefreshed.textContent = `Last refreshed: ${time(dashboard.last_refreshed_at)}`;
       activeCount.textContent = `${(dashboard.active_trades || []).length} active`;
       if ((dashboard.errors || []).length) setNotice(dashboard.errors.slice(0, 3).join(" · "), true);
       else setNotice("Dashboard synced.");
+    }
+
+    function renderStrategy(summary) {
+      const items = [
+        ["Realised PnL", `${money(summary.realized_pnl_usdt)} USDT`, pnlClass(summary.realized_pnl_usdt)],
+        ["Unrealised PnL", `${money(summary.unrealized_pnl_usdt)} USDT`, pnlClass(summary.unrealized_pnl_usdt)],
+        ["Open risk", `${money(summary.open_risk_usdt)} USDT`, ""],
+        ["Win rate", pct(summary.win_rate_percent), ""],
+        ["Profit factor", num(summary.profit_factor), ""],
+        ["Avg R", num(summary.average_r), pnlClass(summary.average_r)],
+        ["Expectancy", `${money(summary.expectancy_usdt)} USDT`, pnlClass(summary.expectancy_usdt)],
+        ["Expectancy R", num(summary.expectancy_r), pnlClass(summary.expectancy_r)],
+        ["Avg winner", `${money(summary.average_winner_usdt)} USDT`, "profit"],
+        ["Avg loser", `${money(summary.average_loser_usdt)} USDT`, summary.average_loser_usdt ? "loss" : ""],
+        ["Closed trades", fmt(summary.closed_trades), ""],
+        ["Exit issues", fmt(summary.exit_issue_count), summary.exit_issue_count ? "loss" : "profit"],
+      ];
+      strategyGrid.innerHTML = items.map(([k,v,c]) => `<div class="panel metric"><span class="label">${k}</span><span class="value ${c || ""}">${v}</span></div>`).join("");
     }
 
     function renderReadiness(live) {

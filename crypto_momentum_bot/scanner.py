@@ -520,19 +520,12 @@ class MomentumScanner:
         status = self.db.fetch_one("SELECT errors FROM bot_status WHERE id = 1") or {}
         if status.get("errors"):
             errors.append(status["errors"])
-        closed_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in closed)
-        active_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in active)
-        active_exposure = sum(float(trade.get("current_value_usdt") or trade.get("entry_value_usdt") or 0) for trade in active)
+        strategy_summary = self._strategy_performance_summary(active, closed, issues)
         return {
             "last_refreshed_at": now_iso(),
             "refresh": refresh,
             "errors": errors[:8],
-            "summary": {
-                "global_pnl_usdt": round(closed_pnl + active_pnl, 4),
-                "active_pnl_usdt": round(active_pnl, 4),
-                "closed_pnl_usdt": round(closed_pnl, 4),
-                "in_trade_amount_usdt": round(active_exposure, 4),
-            },
+            "summary": strategy_summary,
             "active_trades": active,
             "exit_issues": issues,
             "closed_trades": closed,
@@ -544,6 +537,68 @@ class MomentumScanner:
             },
             "recent_events": self.db.fetch_all("SELECT * FROM trade_events ORDER BY timestamp DESC LIMIT 80"),
         }
+
+    def _strategy_performance_summary(
+        self,
+        active: list[dict[str, Any]],
+        closed: list[dict[str, Any]],
+        issues: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        closed_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in closed)
+        active_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in active)
+        active_exposure = sum(
+            float(trade.get("current_value_usdt") or trade.get("entry_value_usdt") or 0)
+            for trade in active
+        )
+        winners = [float(trade.get("pnl_usdt") or 0) for trade in closed if float(trade.get("pnl_usdt") or 0) > 0]
+        losers = [float(trade.get("pnl_usdt") or 0) for trade in closed if float(trade.get("pnl_usdt") or 0) < 0]
+        closed_count = len(closed)
+        gross_profit = sum(winners)
+        gross_loss = abs(sum(losers))
+        r_values = [self._trade_r_multiple(trade) for trade in closed + active]
+        closed_r_values = [self._trade_r_multiple(trade) for trade in closed]
+        open_risk = sum(self._open_risk_usdt(trade) for trade in active)
+        return {
+            "global_pnl_usdt": round(closed_pnl + active_pnl, 4),
+            "realized_pnl_usdt": round(closed_pnl, 4),
+            "unrealized_pnl_usdt": round(active_pnl, 4),
+            "active_pnl_usdt": round(active_pnl, 4),
+            "closed_pnl_usdt": round(closed_pnl, 4),
+            "in_trade_amount_usdt": round(active_exposure, 4),
+            "open_risk_usdt": round(open_risk, 4),
+            "closed_trades": closed_count,
+            "open_trades": len(active),
+            "exit_issue_count": len(issues),
+            "win_rate_percent": round((len(winners) / closed_count) * 100, 2) if closed_count else 0,
+            "average_winner_usdt": round(gross_profit / len(winners), 4) if winners else 0,
+            "average_loser_usdt": round(sum(losers) / len(losers), 4) if losers else 0,
+            "profit_factor": round(gross_profit / gross_loss, 4) if gross_loss else (round(gross_profit, 4) if gross_profit else 0),
+            "average_r": round(sum(r_values) / len(r_values), 4) if r_values else 0,
+            "closed_average_r": round(sum(closed_r_values) / len(closed_r_values), 4) if closed_r_values else 0,
+            "expectancy_usdt": round(closed_pnl / closed_count, 4) if closed_count else 0,
+            "expectancy_r": round(sum(closed_r_values) / len(closed_r_values), 4) if closed_r_values else 0,
+        }
+
+    def _trade_initial_risk_usdt(self, trade: dict[str, Any]) -> float:
+        entry = float(trade.get("entry_price") or 0)
+        stop = float(trade.get("stop_loss") or 0)
+        size = float(trade.get("position_size") or 0)
+        risk_per_unit = max(entry - stop, 0)
+        return risk_per_unit * size
+
+    def _trade_r_multiple(self, trade: dict[str, Any]) -> float:
+        initial_risk = self._trade_initial_risk_usdt(trade)
+        if initial_risk <= 0:
+            return 0.0
+        return float(trade.get("pnl_usdt") or 0) / initial_risk
+
+    def _open_risk_usdt(self, trade: dict[str, Any]) -> float:
+        current = float(trade.get("current_price") or trade.get("entry_price") or 0)
+        stop = float(trade.get("stop_loss") or 0)
+        remaining = float(trade.get("remaining_position_size") or trade.get("position_size") or 0)
+        if current <= 0 or stop <= 0 or remaining <= 0:
+            return 0.0
+        return max(current - stop, 0) * remaining
 
     def _enrich_signal_quant(self, signal: dict[str, Any]) -> dict[str, Any]:
         item = dict(signal)
