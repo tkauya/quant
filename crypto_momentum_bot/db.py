@@ -157,8 +157,6 @@ CREATE INDEX IF NOT EXISTS idx_signals_timestamp ON signals(timestamp DESC);
 CREATE INDEX IF NOT EXISTS idx_signals_symbol ON signals(symbol);
 CREATE INDEX IF NOT EXISTS idx_trades_status ON trades(status);
 CREATE INDEX IF NOT EXISTS idx_live_order_intents_status ON live_order_intents(status);
-CREATE INDEX IF NOT EXISTS idx_live_order_intents_lifecycle ON live_order_intents(lifecycle_state);
-CREATE INDEX IF NOT EXISTS idx_trade_events_trade_id ON trade_events(trade_id);
 """
 
 
@@ -253,6 +251,8 @@ class Database:
         conn.execute(
             "UPDATE live_order_intents SET first_seen_at = COALESCE(first_seen_at, timestamp), last_seen_at = COALESCE(last_seen_at, timestamp), scan_seen_at = COALESCE(scan_seen_at, timestamp)"
         )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_live_order_intents_lifecycle ON live_order_intents(lifecycle_state)")
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_trade_events_trade_id ON trade_events(trade_id)")
 
     def fetch_one(self, query: str, params: Iterable[Any] = ()) -> dict[str, Any] | None:
         with self.connect() as conn:
