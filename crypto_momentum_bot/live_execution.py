@@ -153,6 +153,11 @@ class RiskGuard:
         if intent.quote_amount <= 0:
             problems.append("Quote amount must be positive")
 
+        if account_size > 0 and intent.quote_amount > account_size:
+            problems.append(
+                f"Quote amount {intent.quote_amount:.4f} exceeds configured account size {account_size:.4f}"
+            )
+
         tolerance = max(0.01, max_risk * 0.001)
         if estimated_risk > max_risk + tolerance:
             problems.append(

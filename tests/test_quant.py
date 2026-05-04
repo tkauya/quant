@@ -78,6 +78,23 @@ class QuantTests(unittest.TestCase):
         problems = guard.validate_intent(intent)
         self.assertTrue(any("exceeds max risk" in problem for problem in problems))
 
+    def test_risk_guard_rejects_quote_above_account_size(self):
+        guard = RiskGuard(FakeDb(account_size=100, risk_percent=10))
+        intent = OrderIntent(
+            symbol="ETH/USDT",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quote_amount=150,
+            base_quantity=None,
+            reference_price=100,
+            stop_loss=99,
+            take_profit_1=107.5,
+            take_profit_2=112.5,
+            reason="test",
+        )
+        problems = guard.validate_intent(intent)
+        self.assertTrue(any("exceeds configured account size" in problem for problem in problems))
+
     def test_risk_guard_allows_capped_intent(self):
         guard = RiskGuard(FakeDb(account_size=100, risk_percent=1))
         intent = OrderIntent(
