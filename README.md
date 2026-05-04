@@ -139,6 +139,40 @@ LIVE_TRADING_UNLOCKED=true
 
 Safer private option: use Tailscale on the VPS and phone, then keep the bot off the public internet entirely.
 
+### Common VPS Commands
+
+From your computer, SSH into the VPS:
+
+```bash
+ssh root@YOUR_VPS_IP
+```
+
+Then update and restart the bot:
+
+```bash
+cd /root/quant
+git pull
+systemctl restart quant-bot
+```
+
+Check service status:
+
+```bash
+systemctl status quant-bot --no-pager
+```
+
+View recent logs:
+
+```bash
+journalctl -u quant-bot -n 80 --no-pager
+```
+
+If the dashboard looks stale after code changes, restart the service and refresh the browser:
+
+```bash
+systemctl restart quant-bot
+```
+
 ## Railway Deployment
 
 Railway is a good fit for phone access because it gives you a public HTTPS URL and simple environment-variable management.
