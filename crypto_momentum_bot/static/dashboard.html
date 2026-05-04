@@ -196,6 +196,7 @@
 
     function renderStatus(status, dashboard) {
       const b = status.bot_status || {}, s = status.settings || {}, gates = status.live_gates || {};
+      const summary = dashboard.summary || {};
       mode.value = b.mode || "alert-only";
       accountSize.value = s.account_size ?? "";
       riskPct.value = s.risk_per_trade_percent ?? "";
@@ -205,6 +206,8 @@
       const items = [
         ["Bot", b.is_running ? "Running" : "Stopped", b.is_running ? "good" : "bad"],
         ["Mode", b.mode || "unknown", ""],
+        ["Global PnL", `${money(summary.global_pnl_usdt)} USDT`, pnlClass(summary.global_pnl_usdt)],
+        ["In trades", `${money(summary.in_trade_amount_usdt)} USDT`, ""],
         ["Last scan", b.last_scan_time ? time(b.last_scan_time) : "Never", ""],
         ["Active trades", (dashboard.active_trades || []).length, ""],
         ["Exit issues", (dashboard.exit_issues || []).length, (dashboard.exit_issues || []).length ? "bad" : "good"],

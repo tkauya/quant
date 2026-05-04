@@ -520,10 +520,19 @@ class MomentumScanner:
         status = self.db.fetch_one("SELECT errors FROM bot_status WHERE id = 1") or {}
         if status.get("errors"):
             errors.append(status["errors"])
+        closed_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in closed)
+        active_pnl = sum(float(trade.get("pnl_usdt") or 0) for trade in active)
+        active_exposure = sum(float(trade.get("current_value_usdt") or trade.get("entry_value_usdt") or 0) for trade in active)
         return {
             "last_refreshed_at": now_iso(),
             "refresh": refresh,
             "errors": errors[:8],
+            "summary": {
+                "global_pnl_usdt": round(closed_pnl + active_pnl, 4),
+                "active_pnl_usdt": round(active_pnl, 4),
+                "closed_pnl_usdt": round(closed_pnl, 4),
+                "in_trade_amount_usdt": round(active_exposure, 4),
+            },
             "active_trades": active,
             "exit_issues": issues,
             "closed_trades": closed,
