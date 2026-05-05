@@ -15,6 +15,7 @@ from .live_execution import GatedLiveExecutor
 from .market_data import BinanceMarketData, MarketTicker
 from .quant import calculate_ev, parse_json_dict, score_breakdown_from_notes, score_breakdown_to_dict, setup_type_from_note
 from .scoring import ScoreBreakdown, classify, clamp
+from .signal_engine import decision_to_signal_dict, is_live_eligible, score_signal
 
 logger = logging.getLogger(__name__)
 
@@ -45,7 +46,7 @@ class MomentumScanner:
 
             for rank, ticker in enumerate(tickers, start=1):
                 try:
-                    signal = self._build_signal(ticker, rank, btc_5m, eth_5m)
+                    signal = self._build_signal(ticker, rank, btc_5m, eth_5m, btc_4h, eth_4h)
                     signal_id = self._insert_signal(signal)
                     saved += 1
                     self._maybe_create_live_order_intent(signal_id, signal)
@@ -78,54 +79,52 @@ class MomentumScanner:
         volume_rank: int,
         btc_5m: pd.DataFrame,
         eth_5m: pd.DataFrame,
+        btc_4h: pd.DataFrame,
+        eth_4h: pd.DataFrame,
     ) -> dict[str, Any]:
         daily = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1d"))
         four_h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "4h"))
         one_h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1h"))
+        fifteen_m = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "15m"))
         five_m = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "5m"))
-
-        latest_5m = five_m.iloc[-1]
-        prev_5m = five_m.iloc[-2]
-        latest_1h = one_h.iloc[-1]
-        prev_1h = one_h.iloc[-2]
-        price = float(latest_5m["close"])
-
-        trend_status = self._trend_status(daily, four_h, one_h, five_m)
-        volume_status = self._volume_status(latest_5m)
-        obv_status = self._obv_status(latest_5m, prev_5m)
-        macd_status = self._macd_status(latest_5m, prev_5m, latest_1h, prev_1h)
-        relative_strength = self._relative_strength(five_m, btc_5m, eth_5m)
-        structure = self._structure_note(five_m)
-        entry_zone, stop_loss, tp1, tp2, rr = self._risk_plan(five_m)
-        breakdown = self._score(volume_rank, latest_5m, latest_1h, trend_status, volume_status, obv_status, macd_status, relative_strength, rr)
-        breakdown_json = score_breakdown_to_dict(breakdown)
-        setup_type = setup_type_from_note(structure)
-        volume_ratio = round(float(latest_5m["volume"] / latest_5m["vol_ma20"]), 4) if latest_5m["vol_ma20"] else 0
-        notes = "; ".join(["5m momentum swing profile", structure, f"Score parts {breakdown}"])
-
-        return {
-            "timestamp": now_iso(),
-            "symbol": ticker.symbol,
-            "volume_rank": volume_rank,
-            "price": price,
-            "score": breakdown.total,
-            "tier": classify(breakdown.total),
-            "trend_status": trend_status,
-            "volume_status": volume_status,
-            "obv_status": obv_status,
-            "rsi": round(float(latest_5m["rsi14"]), 2),
-            "macd_status": macd_status,
-            "relative_strength": relative_strength,
-            "entry_zone": entry_zone,
-            "stop_loss": stop_loss,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
-            "risk_reward": rr,
-            "notes": notes,
-            "score_breakdown_json": json.dumps(breakdown_json),
-            "setup_type": setup_type,
-            "volume_ratio": volume_ratio,
-        }
+        open_trade = self.db.fetch_one(
+            """
+            SELECT id FROM trades
+            WHERE symbol = ?
+              AND status IN ('open', 'partial', 'partially_closed')
+              AND execution_type = 'live'
+            LIMIT 1
+            """,
+            (ticker.symbol,),
+        )
+        decision = score_signal(
+            symbol=ticker.symbol,
+            volume_rank=volume_rank,
+            quote_volume=ticker.quote_volume,
+            entry_tf=five_m,
+            btc_entry_tf=btc_5m,
+            eth_entry_tf=eth_5m,
+            daily=daily,
+            fifteen_m=fifteen_m,
+            one_h=one_h,
+            four_h=four_h,
+            btc_four_h=btc_4h,
+            eth_four_h=eth_4h,
+            existing_open_trade=bool(open_trade),
+        )
+        signal = decision_to_signal_dict(decision, now_iso(), volume_rank)
+        self.log(
+            "INFO" if is_live_eligible(signal) else "DEBUG",
+            f"Signal V2 {'accepted' if is_live_eligible(signal) else 'rejected/watchlist'} for {ticker.symbol}",
+            {
+                "symbol": ticker.symbol,
+                "score": signal["score"],
+                "tier": signal["tier"],
+                "rejection_reason": signal.get("rejection_reason"),
+                "component_scores": signal.get("component_scores_json"),
+            },
+        )
+        return signal
 
     def _trend_label(self, df: pd.DataFrame) -> str:
         latest = df.iloc[-1]
@@ -255,8 +254,10 @@ class MomentumScanner:
                 timestamp, symbol, volume_rank, price, score, tier, trend_status,
                 volume_status, obv_status, rsi, macd_status, relative_strength,
                 entry_zone, stop_loss, take_profit_1, take_profit_2, risk_reward, notes,
-                score_breakdown_json, ev_json, setup_type, volume_ratio
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                score_breakdown_json, ev_json, setup_type, volume_ratio, strategy_version,
+                signal_type, rejection_reason, component_scores_json, relative_strength_btc,
+                relative_strength_eth, market_regime, diagnostics_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 signal["timestamp"],
@@ -281,6 +282,14 @@ class MomentumScanner:
                 signal.get("ev_json", "{}"),
                 signal.get("setup_type", ""),
                 signal.get("volume_ratio"),
+                signal.get("strategy_version", ""),
+                signal.get("signal_type", ""),
+                signal.get("rejection_reason", ""),
+                signal.get("component_scores_json", "{}"),
+                signal.get("relative_strength_btc"),
+                signal.get("relative_strength_eth"),
+                signal.get("market_regime", ""),
+                signal.get("diagnostics_json", "{}"),
             ),
         )
 
@@ -288,7 +297,7 @@ class MomentumScanner:
         status = self.db.fetch_one("SELECT mode FROM bot_status WHERE id = 1") or {}
         if status.get("mode") != "paper-trading":
             return
-        if signal["score"] < 70:
+        if not is_live_eligible(signal):
             return
         existing = self.db.fetch_one(
             "SELECT id FROM trades WHERE symbol = ? AND status = 'open' LIMIT 1",
@@ -327,7 +336,7 @@ class MomentumScanner:
         self.log("INFO", f"Paper trade opened for {signal['symbol']}", signal)
 
     def _maybe_create_live_order_intent(self, signal_id: int, signal: dict[str, Any]) -> None:
-        if signal["score"] < 70:
+        if not is_live_eligible(signal):
             return
         existing = self.db.fetch_one(
             """
@@ -521,12 +530,14 @@ class MomentumScanner:
         if status.get("errors"):
             errors.append(status["errors"])
         strategy_summary = self._strategy_performance_summary(active, closed, issues)
+        latest_signals = [self._enrich_signal_quant(row) for row in self._latest_signals(limit=40)]
         return {
             "last_refreshed_at": now_iso(),
             "refresh": refresh,
             "errors": errors[:8],
             "summary": strategy_summary,
             "scan_result": self._latest_scan_result_summary(),
+            "signals": latest_signals,
             "active_trades": active,
             "exit_issues": issues,
             "closed_trades": closed,
@@ -558,7 +569,7 @@ class MomentumScanner:
 
         signals = self.db.fetch_all(
             """
-            SELECT symbol, score, tier
+            SELECT symbol, score, tier, rejection_reason
             FROM signals
             WHERE timestamp >= ?
             ORDER BY score DESC, volume_rank ASC
@@ -574,7 +585,10 @@ class MomentumScanner:
             """,
             (last_scan,),
         )
-        eligible = [signal for signal in signals if float(signal.get("score") or 0) >= 70]
+        eligible = [
+            signal for signal in signals
+            if float(signal.get("score") or 0) >= 80 and not str(signal.get("rejection_reason") or "").strip()
+        ]
         new_intents = [intent for intent in intents if intent.get("lifecycle_state") == "new"]
         repeated_intents = [
             intent for intent in intents
@@ -587,7 +601,7 @@ class MomentumScanner:
         elif not signals:
             message = "Scan completed, but no signal rows were stored."
         elif not eligible:
-            message = "Scan completed; no plays met the live-intent threshold."
+            message = "Scan completed; no Tier A plays met the live-intent threshold."
         elif not intents:
             message = "Scan found eligible signals, but no intents were created because they were already active/traded or blocked."
         elif new_intents:
@@ -685,8 +699,15 @@ class MomentumScanner:
         if not breakdown:
             breakdown = score_breakdown_from_notes(str(item.get("notes") or ""))
         item["score_breakdown"] = breakdown
+        item["component_scores"] = parse_json_dict(item.get("component_scores_json")) or breakdown
         item["ev"] = ev
         item["setup_type"] = item.get("setup_type") or setup_type_from_note(str(item.get("notes") or ""))
+        item["signal_type"] = item.get("signal_type") or item["setup_type"]
+        item["strategy_version"] = item.get("strategy_version") or ""
+        item["rejection_reason"] = item.get("rejection_reason") or ""
+        item["relative_strength_btc"] = item.get("relative_strength_btc")
+        item["relative_strength_eth"] = item.get("relative_strength_eth")
+        item["market_regime"] = item.get("market_regime") or status.get("market_regime") or ""
         item["quote_amount"] = ev.get("quote_amount")
         item["risk_usdt"] = ev.get("risk_usdt")
         item["expected_value_r"] = ev.get("expected_value_r")
@@ -744,6 +765,13 @@ class MomentumScanner:
             if not item["score_breakdown"]:
                 item["score_breakdown"] = score_breakdown_from_notes(str(signal_like.get("notes") or ""))
             item["setup_type"] = signal_like.get("setup_type") or setup_type_from_note(str(signal_like.get("notes") or ""))
+            item["signal_type"] = signal_like.get("signal_type") or item["setup_type"]
+            item["strategy_version"] = signal_like.get("strategy_version") or ""
+            item["rejection_reason"] = signal_like.get("rejection_reason") or ""
+            item["relative_strength_btc"] = signal_like.get("relative_strength_btc")
+            item["relative_strength_eth"] = signal_like.get("relative_strength_eth")
+            item["market_regime"] = signal_like.get("market_regime") or status.get("market_regime") or ""
+            item["component_scores"] = parse_json_dict(signal_like.get("component_scores_json")) or item["score_breakdown"]
             item["risk_usdt"] = ev.get("risk_usdt")
             item["expected_value_r"] = ev.get("expected_value_r")
             item["expected_value_usdt"] = ev.get("expected_value_usdt")

@@ -126,6 +126,11 @@
     </section>
 
     <section class="section">
+      <div class="section-head"><h2>Signal Quality</h2><span class="small muted">Tier A accepted · Tier B watchlist · rejected candidates explain why</span></div>
+      <div class="cards three" id="signalQuality"></div>
+    </section>
+
+    <section class="section">
       <div class="section-head"><h2>A. Active Trades</h2><span class="small muted" id="activeCount"></span></div>
       <div class="cards" id="activeTrades"></div>
     </section>
@@ -262,7 +267,7 @@
         ["Scan finished", status.last_finished_at ? time(status.last_finished_at) : "Never"],
         ["Coins scanned", fmt(scan.coins_scanned)],
         ["Signals stored", fmt(scan.signals_found)],
-        ["Eligible >= 70", fmt(scan.eligible_signals)],
+        ["Tier A eligible", fmt(scan.eligible_signals)],
         ["Intents touched", `${fmt(scan.intents_touched)} (${fmt(scan.new_intents)} new, ${fmt(scan.repeated_intents)} repeat)`],
         ["Top signal", scan.top_symbol ? `${scan.top_symbol} · ${num(scan.top_score)}` : "n/a"],
         ["Scan error", status.last_error || "None"],
@@ -360,6 +365,33 @@
       </article>`;
     }
 
+    function signalCard(s) {
+      const rejected = Boolean(s.rejection_reason);
+      return `<article class="card">
+        <div class="card-head">
+          <div><div class="symbol">${s.symbol}</div><div class="small muted">${fmt(s.strategy_version)} · ${fmt(s.signal_type || s.setup_type)}</div></div>
+          <span class="pill ${rejected ? "bad" : Number(s.score) >= 80 ? "good" : "warn"}">${fmt(s.tier)}</span>
+        </div>
+        <div class="facts">
+          <div class="fact"><span class="label">Score</span><strong>${num(s.score)}</strong></div>
+          <div class="fact"><span class="label">RR</span><strong>${num(s.risk_reward)}</strong></div>
+          <div class="fact"><span class="label">OBV</span><strong>${fmt(s.obv_status)}</strong></div>
+          <div class="fact"><span class="label">Volume</span><strong>${fmt(s.volume_status)}</strong></div>
+          <div class="fact"><span class="label">RS BTC</span><strong>${pct(Number(s.relative_strength_btc || 0) * 100)}</strong></div>
+          <div class="fact"><span class="label">RS ETH</span><strong>${pct(Number(s.relative_strength_eth || 0) * 100)}</strong></div>
+          <div class="fact"><span class="label">Regime</span><strong>${fmt(s.market_regime)}</strong></div>
+          <div class="fact"><span class="label">RS State</span><strong>${fmt(s.relative_strength)}</strong></div>
+        </div>
+        ${rejected ? `<div class="pill bad">${s.rejection_reason}</div>` : ""}
+        <details><summary>Reason and components</summary>
+          <div class="detail-grid">
+            <div><span class="label">Entry reason</span><br><strong>${fmt(s.notes)}</strong></div>
+            <div><span class="label">Components</span><br><strong>${fmt(JSON.stringify(s.component_scores || s.score_breakdown || {}))}</strong></div>
+          </div>
+        </details>
+      </article>`;
+    }
+
     function renderCards(id, rows, renderer, emptyText) {
       const node = document.getElementById(id);
       node.innerHTML = rows && rows.length ? rows.map(renderer).join("") : `<div class="empty">${emptyText}</div>`;
@@ -381,6 +413,7 @@
         renderStatus(status, dashboard);
         renderScanResult(dashboard);
         renderReadiness(live);
+        renderCards("signalQuality", dashboard.signals || [], signalCard, "No signals from the latest scan yet.");
         renderCards("activeTrades", dashboard.active_trades || [], tradeCard, "No active live trades.");
         renderCards("exitIssues", dashboard.exit_issues || [], tradeCard, "No exit strategy issues.");
         renderCards("newIntents", (dashboard.intents || {}).new || [], intentCard, "No new trade intents.");

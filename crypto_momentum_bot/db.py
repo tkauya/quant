@@ -33,7 +33,15 @@ CREATE TABLE IF NOT EXISTS signals (
     score_breakdown_json TEXT NOT NULL DEFAULT '{}',
     ev_json TEXT NOT NULL DEFAULT '{}',
     setup_type TEXT NOT NULL DEFAULT '',
-    volume_ratio REAL
+    volume_ratio REAL,
+    strategy_version TEXT NOT NULL DEFAULT '',
+    signal_type TEXT NOT NULL DEFAULT '',
+    rejection_reason TEXT NOT NULL DEFAULT '',
+    component_scores_json TEXT NOT NULL DEFAULT '{}',
+    relative_strength_btc REAL,
+    relative_strength_eth REAL,
+    market_regime TEXT NOT NULL DEFAULT '',
+    diagnostics_json TEXT NOT NULL DEFAULT '{}'
 );
 
 CREATE TABLE IF NOT EXISTS trades (
@@ -188,6 +196,14 @@ class Database:
                 "ev_json": "TEXT NOT NULL DEFAULT '{}'",
                 "setup_type": "TEXT NOT NULL DEFAULT ''",
                 "volume_ratio": "REAL",
+                "strategy_version": "TEXT NOT NULL DEFAULT ''",
+                "signal_type": "TEXT NOT NULL DEFAULT ''",
+                "rejection_reason": "TEXT NOT NULL DEFAULT ''",
+                "component_scores_json": "TEXT NOT NULL DEFAULT '{}'",
+                "relative_strength_btc": "REAL",
+                "relative_strength_eth": "REAL",
+                "market_regime": "TEXT NOT NULL DEFAULT ''",
+                "diagnostics_json": "TEXT NOT NULL DEFAULT '{}'",
             },
             "trades": {
                 "lifecycle_state": "TEXT NOT NULL DEFAULT 'open'",

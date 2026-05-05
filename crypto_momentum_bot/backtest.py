@@ -13,6 +13,7 @@ import pandas as pd
 from .indicators import enrich
 from .market_data import BinanceMarketData, MarketTicker
 from .scoring import ScoreBreakdown, classify, clamp
+from .signal_engine import STRATEGY_VERSION, score_signal
 from .settings import get_settings
 
 
@@ -34,6 +35,10 @@ class BacktestTrade:
     pnl_usdt: float
     r_multiple: float
     reason: str
+    strategy_version: str = STRATEGY_VERSION
+    signal_type: str = ""
+    market_regime: str = ""
+    score_bucket: str = ""
 
 
 class BacktestEngine:
@@ -75,6 +80,8 @@ class BacktestEngine:
         universe = self._universe()
         btc = enrich(self.market_data.fetch_ohlcv("BTC/USDT", self.timeframe, limit=self.bars + 100))
         eth = enrich(self.market_data.fetch_ohlcv("ETH/USDT", self.timeframe, limit=self.bars + 100))
+        btc_4h = enrich(self.market_data.fetch_ohlcv("BTC/USDT", "4h", limit=max(120, int(self.bars / 48) + 100)))
+        eth_4h = enrich(self.market_data.fetch_ohlcv("ETH/USDT", "4h", limit=max(120, int(self.bars / 48) + 100)))
         trades: list[BacktestTrade] = []
         errors: list[str] = []
         universe_errors = [ticker.symbol for ticker in universe if ticker.quote_volume < 0]
@@ -86,10 +93,14 @@ class BacktestEngine:
                 df = enrich(self.market_data.fetch_ohlcv(ticker.symbol, self.timeframe, limit=self.bars + 100))
                 trend_1h = None
                 trend_4h = None
-                if self.scalp_mode:
+                trend_15m = None
+                trend_daily = None
+                if self.timeframe == "5m" or self.scalp_mode:
+                    trend_15m = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "15m", limit=max(120, int(self.bars / 3) + 100)))
                     trend_1h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1h", limit=max(120, int(self.bars / 12) + 100)))
                     trend_4h = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "4h", limit=max(120, int(self.bars / 48) + 100)))
-                trades.extend(self._run_symbol(ticker, rank, df, btc, eth, trend_1h, trend_4h))
+                    trend_daily = enrich(self.market_data.fetch_ohlcv(ticker.symbol, "1d", limit=180))
+                trades.extend(self._run_symbol(ticker, rank, df, btc, eth, trend_1h, trend_4h, trend_15m, trend_daily, btc_4h, eth_4h))
             except Exception as exc:
                 errors.append(f"{ticker.symbol}: {exc}")
 
@@ -103,10 +114,11 @@ class BacktestEngine:
                 "timeframe": self.timeframe,
                 "bars_requested": self.bars,
                 "min_score": self.min_score,
-                "entry": "Next 4H candle open after signal",
+                "entry": f"Next {self.timeframe} candle open after signal",
                 "exit": "Full size exits at TP1 or stop loss; if both touch same candle, stop is assumed first",
                 "fees": f"{self.fee_bps} bps per side",
                 "scalp_mode": self.scalp_mode,
+                "strategy_version": STRATEGY_VERSION,
                 "scalp_exit": "50% TP1, 50% TP2, hard time stop, or momentum-fade exit" if self.scalp_mode else None,
                 "scalp_params": {
                     "stop_atr": self.scalp_stop_atr,
@@ -153,6 +165,10 @@ class BacktestEngine:
         eth: pd.DataFrame,
         trend_1h: pd.DataFrame | None = None,
         trend_4h: pd.DataFrame | None = None,
+        trend_15m: pd.DataFrame | None = None,
+        trend_daily: pd.DataFrame | None = None,
+        btc_4h: pd.DataFrame | None = None,
+        eth_4h: pd.DataFrame | None = None,
     ) -> list[BacktestTrade]:
         trades: list[BacktestTrade] = []
         warmup = 80
@@ -163,8 +179,25 @@ class BacktestEngine:
             if self.scalp_mode and not self._higher_tf_bullish(df.iloc[i]["timestamp"], trend_1h, trend_4h):
                 i += 1
                 continue
-            signal = self._signal_at(ticker.symbol, volume_rank, df, btc, eth, i)
+            ts = df.iloc[i]["timestamp"]
+            signal = self._signal_at(
+                ticker,
+                volume_rank,
+                df,
+                btc,
+                eth,
+                i,
+                self._slice_to(trend_15m, ts),
+                self._slice_to(trend_1h, ts),
+                self._slice_to(trend_4h, ts),
+                self._slice_to(trend_daily, ts),
+                self._slice_to(btc_4h, ts),
+                self._slice_to(eth_4h, ts),
+            )
             if signal["score"] < self.min_score:
+                i += 1
+                continue
+            if signal.get("rejection_reason"):
                 i += 1
                 continue
 
@@ -209,12 +242,16 @@ class BacktestEngine:
                     take_profit_1=round(take_profit_1, 8),
                     take_profit_2=round(take_profit_2, 8),
                     score=signal["score"],
-                    tier=classify(signal["score"]),
+                    tier=signal.get("tier", classify(signal["score"])),
                     outcome=outcome,
                     pnl_percent=round(pnl_percent, 4),
                     pnl_usdt=round(pnl_usdt, 4),
                     r_multiple=round(r_multiple, 4),
                     reason=signal["reason"],
+                    strategy_version=signal.get("strategy_version", STRATEGY_VERSION),
+                    signal_type=signal.get("signal_type", ""),
+                    market_regime=signal.get("market_regime", ""),
+                    score_bucket=self._score_bucket(signal["score"]),
                 )
             )
             i = exit_index + 1
@@ -223,30 +260,46 @@ class BacktestEngine:
 
     def _signal_at(
         self,
-        symbol: str,
+        ticker: MarketTicker,
         volume_rank: int,
         df: pd.DataFrame,
         btc: pd.DataFrame,
         eth: pd.DataFrame,
         i: int,
+        fifteen_m: pd.DataFrame | None = None,
+        one_h: pd.DataFrame | None = None,
+        four_h: pd.DataFrame | None = None,
+        daily: pd.DataFrame | None = None,
+        btc_4h: pd.DataFrame | None = None,
+        eth_4h: pd.DataFrame | None = None,
     ) -> dict[str, Any]:
         current = df.iloc[: i + 1]
-        latest = current.iloc[-1]
-        prev = current.iloc[-2]
-        trend_status = self._trend_status(current)
-        volume_status = self._volume_status(latest)
-        obv_status = self._obv_status(latest, prev)
-        macd_status = self._macd_status(latest, prev)
-        relative_strength = self._relative_strength(current, btc.iloc[: i + 1], eth.iloc[: i + 1])
-        stop_loss, tp1, tp2, rr = self._scalp_risk_plan(current) if self.scalp_mode else self._risk_plan(current)
-        score = self._score(volume_rank, latest, trend_status, volume_status, obv_status, macd_status, relative_strength, rr)
+        decision = score_signal(
+            symbol=ticker.symbol,
+            volume_rank=volume_rank,
+            quote_volume=ticker.quote_volume,
+            entry_tf=current,
+            btc_entry_tf=btc.iloc[: i + 1],
+            eth_entry_tf=eth.iloc[: i + 1],
+            daily=daily,
+            fifteen_m=fifteen_m,
+            one_h=one_h,
+            four_h=four_h,
+            btc_four_h=btc_4h,
+            eth_four_h=eth_4h,
+        )
         return {
-            "symbol": symbol,
-            "score": score.total,
-            "stop_loss": stop_loss,
-            "take_profit_1": tp1,
-            "take_profit_2": tp2,
-            "reason": "; ".join([trend_status, volume_status, obv_status, macd_status, relative_strength]),
+            "symbol": ticker.symbol,
+            "score": decision.score,
+            "stop_loss": decision.stop_loss,
+            "take_profit_1": decision.take_profit_1,
+            "take_profit_2": decision.take_profit_2,
+            "reason": decision.entry_reason,
+            "rejection_reason": decision.rejection_reason,
+            "strategy_version": decision.strategy_version,
+            "tier": decision.tier,
+            "signal_type": decision.signal_type,
+            "market_regime": decision.market_regime,
         }
 
     def _find_momentum_exits(
@@ -451,23 +504,103 @@ class BacktestEngine:
         losers = [trade for trade in trades if trade.pnl_usdt < 0]
         gross_win = sum(trade.pnl_usdt for trade in winners)
         gross_loss = abs(sum(trade.pnl_usdt for trade in losers))
+        average_win = gross_win / len(winners) if winners else 0
+        average_loss = gross_loss / len(losers) if losers else 0
+        win_rate = len(winners) / len(trades) if trades else 0
+        loss_rate = len(losers) / len(trades) if trades else 0
+        equity = []
+        running = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        for trade in trades:
+            running += trade.pnl_usdt
+            peak = max(peak, running)
+            max_drawdown = min(max_drawdown, running - peak)
+            equity.append(running)
+        returns = [trade.r_multiple for trade in trades]
+        mean_r = sum(returns) / len(returns) if returns else 0
+        variance = sum((item - mean_r) ** 2 for item in returns) / len(returns) if returns else 0
+        sharpe = mean_r / (variance ** 0.5) if variance > 0 else 0
         return {
+            "strategy_version": STRATEGY_VERSION,
             "trades": len(trades),
             "wins": len(winners),
             "losses": len(losers),
             "win_rate_percent": round((len(winners) / len(trades)) * 100, 2) if trades else 0,
+            "average_win_usdt": round(average_win, 4),
+            "average_loss_usdt": round(average_loss, 4),
+            "expectancy_usdt": round((win_rate * average_win) - (loss_rate * average_loss), 4),
             "total_pnl_usdt": round(pnl, 4),
             "return_percent": round((pnl / self.account_size) * 100, 4) if self.account_size else 0,
             "average_r": round(sum(trade.r_multiple for trade in trades) / len(trades), 4) if trades else 0,
+            "sharpe_simple": round(sharpe, 4),
+            "max_drawdown_usdt": round(max_drawdown, 4),
             "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else None,
             "tp1_exits": len([trade for trade in trades if trade.outcome == "tp1"]),
             "stop_exits": len([trade for trade in trades if trade.outcome == "stop"]),
             "open_marks": len([trade for trade in trades if trade.outcome == "open_mark"]),
+            "average_duration_hours": round(self._average_duration_hours(trades), 4),
+            "by_coin": self._group_performance(trades, "symbol"),
+            "by_market_regime": self._group_performance(trades, "market_regime"),
+            "by_score_bucket": self._group_performance(trades, "score_bucket"),
+            "by_signal_type": self._group_performance(trades, "signal_type"),
         }
 
     def _ts(self, row: pd.Series) -> str:
         value = row["timestamp"]
         return value.isoformat() if hasattr(value, "isoformat") else str(value)
+
+    def _slice_to(self, df: pd.DataFrame | None, timestamp: Any) -> pd.DataFrame | None:
+        if df is None or df.empty:
+            return None
+        return df[df["timestamp"] <= timestamp].copy()
+
+    def _score_bucket(self, score: float) -> str:
+        if score >= 90:
+            return "90+"
+        if score >= 80:
+            return "80-90"
+        if score >= 70:
+            return "70-80"
+        if score >= 60:
+            return "60-70"
+        return "<60"
+
+    def _average_duration_hours(self, trades: list[BacktestTrade]) -> float:
+        durations = []
+        for trade in trades:
+            try:
+                start = datetime.fromisoformat(trade.entry_time.replace("Z", "+00:00"))
+                end = datetime.fromisoformat(trade.exit_time.replace("Z", "+00:00"))
+                durations.append((end - start).total_seconds() / 3600)
+            except Exception:
+                continue
+        return sum(durations) / len(durations) if durations else 0
+
+    def _group_performance(self, trades: list[BacktestTrade], field: str) -> dict[str, Any]:
+        groups: dict[str, list[BacktestTrade]] = {}
+        for trade in trades:
+            key = str(getattr(trade, field) or "unknown")
+            groups.setdefault(key, []).append(trade)
+        return {key: self._compact_group_summary(rows) for key, rows in sorted(groups.items())}
+
+    def _compact_group_summary(self, trades: list[BacktestTrade]) -> dict[str, Any]:
+        winners = [trade for trade in trades if trade.pnl_usdt > 0]
+        losers = [trade for trade in trades if trade.pnl_usdt < 0]
+        gross_win = sum(trade.pnl_usdt for trade in winners)
+        gross_loss = abs(sum(trade.pnl_usdt for trade in losers))
+        avg_win = gross_win / len(winners) if winners else 0
+        avg_loss = gross_loss / len(losers) if losers else 0
+        win_rate = len(winners) / len(trades) if trades else 0
+        loss_rate = len(losers) / len(trades) if trades else 0
+        return {
+            "trades": len(trades),
+            "win_rate_percent": round(win_rate * 100, 2),
+            "total_pnl_usdt": round(sum(trade.pnl_usdt for trade in trades), 4),
+            "expectancy_usdt": round((win_rate * avg_win) - (loss_rate * avg_loss), 4),
+            "profit_factor": round(gross_win / gross_loss, 4) if gross_loss else None,
+            "average_r": round(sum(trade.r_multiple for trade in trades) / len(trades), 4) if trades else 0,
+        }
 
 
 def write_outputs(result: dict[str, Any], out_dir: Path) -> tuple[Path, Path]:
